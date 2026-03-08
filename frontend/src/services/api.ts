@@ -1,4 +1,4 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
 
 class ApiService {
   private token: string | null = null;
@@ -30,21 +30,31 @@ class ApiService {
       ...options.headers,
     };
 
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      ...options,
-      headers,
-    });
+    const url = `${API_BASE_URL}${endpoint}`;
+    console.log(`API Request: ${options.method || 'GET'} ${url}`);
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
-      throw new Error(error.detail || 'An error occurred');
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
+        throw new Error(error.detail || `Request failed with status ${response.status}`);
+      }
+
+      if (response.status === 204) {
+        return {} as T;
+      }
+
+      return response.json();
+    } catch (err: any) {
+      if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
+        throw new Error('Cannot connect to backend server. Is it running on http://127.0.0.1:8000?');
+      }
+      throw err;
     }
-
-    if (response.status === 204) {
-      return {} as T;
-    }
-
-    return response.json();
   }
 
   // Auth

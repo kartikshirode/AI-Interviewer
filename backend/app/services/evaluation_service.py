@@ -1,11 +1,12 @@
 import os
 import json
 from typing import Dict, Any, Optional
-import openai
+import google.generativeai as genai
 
 class EvaluationService:
     def __init__(self):
-        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
+        self.model = genai.GenerativeModel('gemini-1.5-flash')
     
     def evaluate_answer(
         self,
@@ -14,7 +15,7 @@ class EvaluationService:
         difficulty: str = "medium",
         topic: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Evaluate a candidate's answer using OpenAI GPT"""
+        """Evaluate a candidate's answer using Gemini"""
         
         system_prompt = f"""You are an expert technical interviewer evaluating a candidate's answer.
 Evaluate the answer based on:
@@ -38,17 +39,15 @@ Provide a JSON response with:
 Be strict but fair in your evaluation."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Question: {question}\n\nAnswer: {transcript}"}
-                ],
-                temperature=0.3,
-                max_tokens=500
+            response = self.model.generate_content(
+                f"{system_prompt}\n\nQuestion: {question}\n\nAnswer: {transcript}",
+                generation_config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 500
+                }
             )
             
-            result = json.loads(response.choices[0].message.content)
+            result = json.loads(response.text)
             return {
                 "correctness": result.get("correctness", 5),
                 "clarity": result.get("clarity", 5),
@@ -93,17 +92,15 @@ Provide a JSON response:
 }"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Candidate's answers:\n\n{transcript}"}
-                ],
-                temperature=0.3,
-                max_tokens=500
+            response = self.model.generate_content(
+                f"{system_prompt}\n\nCandidate's answers:\n\n{transcript}",
+                generation_config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 500
+                }
             )
             
-            result = json.loads(response.choices[0].message.content)
+            result = json.loads(response.text)
             return {
                 "communication_score": result.get("communication_score", 7),
                 "clarity": result.get("clarity", 7),

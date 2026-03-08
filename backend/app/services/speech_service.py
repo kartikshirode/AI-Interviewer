@@ -2,21 +2,18 @@ import os
 import tempfile
 from typing import Optional
 from pathlib import Path
-import openai
+from faster_whisper import WhisperModel
 
 class SpeechToTextService:
     def __init__(self):
-        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+        self.model = WhisperModel("base", device="cpu", compute_type="int8")
     
     def transcribe_audio(self, audio_path: str) -> str:
-        """Transcribe audio file using OpenAI Whisper"""
+        """Transcribe audio file using faster-whisper (local, free)"""
         try:
-            with open(audio_path, "rb") as audio_file:
-                response = self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file
-                )
-                return response.text
+            segments, info = self.model.transcribe(audio_path, beam_size=5)
+            result = " ".join([segment.text for segment in segments])
+            return result.strip()
         except Exception as e:
             print(f"Error transcribing audio: {e}")
             return ""
