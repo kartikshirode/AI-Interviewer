@@ -181,6 +181,14 @@ class ApiService {
       method: 'POST',
     });
   }
+
+  // Voice Interview
+  async getVoiceToken(interviewId: number, candidateId: number) {
+    return this.request('/voice/token', {
+      method: 'POST',
+      body: JSON.stringify({ interview_id: interviewId, candidate_id: candidateId }),
+    });
+  }
 }
 
 export const api = new ApiService();
