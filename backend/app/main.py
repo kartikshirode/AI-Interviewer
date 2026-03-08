@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import init_db, SessionLocal
 from app.models.models import Topic
-from app.routers import auth, interviews, topics, candidate, video
+from app.routers import auth, interviews, topics, candidate, video, voice
 
 DEFAULT_TOPICS = [
     {"name": "Python", "description": "Python programming language fundamentals and advanced concepts"},
@@ -37,6 +37,7 @@ app.include_router(interviews.router, prefix=settings.API_PREFIX)
 app.include_router(topics.router, prefix=settings.API_PREFIX)
 app.include_router(candidate.router, prefix=settings.API_PREFIX)
 app.include_router(video.router, prefix=settings.API_PREFIX)
+app.include_router(voice.router, prefix=settings.API_PREFIX)
 
 @app.on_event("startup")
 def on_startup():

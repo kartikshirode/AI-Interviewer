@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     
     GEMINI_API_KEY: str = ""
     
+    # LiveKit Configuration (free tier at livekit.io)
+    LIVEKIT_URL: str = "wss://your-project.livekit.cloud"
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    
     class Config:
         env_file = ".env"
 
