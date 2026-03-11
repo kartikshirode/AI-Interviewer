@@ -1,164 +1,305 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { 
-  ConnectOptions, 
-  Room, 
-  RoomEvent, 
-  LocalTrack, 
-  RemoteTrack,
-  LocalVideoTrack,
-  LocalAudioTrack,
-  RemoteParticipant,
-  VideoPresets,
-  AudioPresets
-} from 'livekit-client';
 
-interface UseVoiceInterviewOptions {
-  interviewId: number;
-  candidateId: number;
-  onQuestionReceived?: (question: string) => void;
-  onAnswerTranscribed?: (text: string) => void;
+// Type declarations for Web Speech API
+interface SpeechRecognitionEvent {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
 }
 
-export function useVoiceInterview({ 
-  interviewId, 
-  candidateId,
-  onQuestionReceived,
-  onAnswerTranscribed 
-}: UseVoiceInterviewOptions) {
-  const [room, setRoom] = useState<Room | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+interface SpeechRecognitionResultList {
+  length: number;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionResult {
+  length: number;
+  [index: number]: SpeechRecognitionAlternative;
+  isFinal: boolean;
+}
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionErrorEvent {
+  error: string;
+  message: string;
+}
+
+interface SpeechRecognitionInstance extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognitionInstance;
+    webkitSpeechRecognition: new () => SpeechRecognitionInstance;
+  }
+}
+
+export function useVoiceInterview() {
+  // ── Real-time transcript state (Web Speech API) ──
+  const [transcript, setTranscript] = useState('');
+  const [interimTranscript, setInterimTranscript] = useState('');
   const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const localAudioRef = useRef<HTMLAudioElement>(null);
-  const agentAudioRef = useRef<HTMLAudioElement>(null);
 
-  const connect = useCallback(async () => {
-    try {
-      setError(null);
-      
-      // Get token from backend
-      const response = await fetch(`http://localhost:8000/api/v1/voice/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ interview_id: interviewId, candidate_id: candidateId })
-      });
-      
-      if (!response.ok) {
-        throw new Error('Failed to get interview token');
-      }
-      
-      const { token, url } = await response.json();
-      
-      // Create room
-      const newRoom = new Room({
-        adaptiveStream: true,
-        dynacast: true,
-        videoCaptureDefaults: {
-          ...VideoPresets.h720,
-          facingMode: 'user'
-        },
-        audioCaptureDefaults: AudioPresets.music,
-      });
-      
-      // Set up event listeners
-      newRoom.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
-        if (track.kind === 'audio' && participant.identity === 'agent') {
-          if (agentAudioRef.current) {
-            track.attach(agentAudioRef.current);
-          }
-          setIsSpeaking(true);
-        }
-      });
-      
-      newRoom.on(RoomEvent.TrackUnsubscribed, (track) => {
-        if (track.kind === 'audio') {
-          setIsSpeaking(false);
-        }
-      });
-      
-      newRoom.on(RoomEvent.ParticipantConnected, (participant) => {
-        console.log('Agent connected:', participant.identity);
-        if (participant.identity === 'agent') {
-          setIsListening(true);
-        }
-      });
-      
-      newRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
-        if (participant.identity === 'agent') {
-          setIsListening(false);
-        }
-      });
-      
-      // Connect to room
-      await newRoom.connect(url, token, {
-        autoSubscribe: true,
-      } as ConnectOptions);
-      
-      // Publish local tracks
-      const localTracks = await newRoom.localParticipant.enableMicrophoneAndCamera();
-      for (const track of localTracks) {
-        if (track.kind === 'video' && localVideoRef.current) {
-          track.attach(localVideoRef.current);
-        }
-      }
-      
-      setRoom(newRoom);
-      setIsConnected(true);
-      
-    } catch (err: any) {
-      console.error('Failed to connect:', err);
-      setError(err.message || 'Failed to connect to interview');
-    }
-  }, [interviewId, candidateId]);
+  // ── Background audio recording state (MediaRecorder) ──
+  const [isRecording, setIsRecording] = useState(false);
 
-  const disconnect = useCallback(async () => {
-    if (room) {
-      await room.disconnect();
-      setRoom(null);
-      setIsConnected(false);
-      setIsSpeaking(false);
-      setIsListening(false);
-    }
-  }, [room]);
+  // ── Refs ──
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const finalTranscriptRef = useRef('');
+  const shouldRestartRef = useRef(false);
 
-  const startSpeaking = useCallback(async () => {
-    if (room) {
-      await room.localParticipant.setMicrophoneEnabled(true);
-      setIsSpeaking(true);
-    }
-  }, [room]);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
 
-  const stopSpeaking = useCallback(async () => {
-    if (room) {
-      await room.localParticipant.setMicrophoneEnabled(false);
-      setIsSpeaking(false);
-    }
-  }, [room]);
-
+  // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
-      if (room) {
-        room.disconnect();
+      shouldRestartRef.current = false;
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      stopRecording();
+      if (typeof window !== 'undefined') {
+        window.speechSynthesis?.cancel();
       }
     };
   }, []);
 
+  // ────────────────────────────────────────────────
+  //  TEXT-TO-SPEECH: AI reads the question aloud
+  // ────────────────────────────────────────────────
+  const speakQuestion = useCallback((text: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined') { resolve(); return; }
+
+      window.speechSynthesis.cancel();
+
+      const speak = () => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 0.95;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+        utterance.lang = 'en-US';
+
+        const voices = window.speechSynthesis.getVoices();
+        const preferred = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google'))
+          || voices.find(v => v.lang.startsWith('en'));
+        if (preferred) utterance.voice = preferred;
+
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend = () => { setIsSpeaking(false); resolve(); };
+        utterance.onerror = () => { setIsSpeaking(false); resolve(); };
+
+        window.speechSynthesis.speak(utterance);
+      };
+
+      if (window.speechSynthesis.getVoices().length > 0) {
+        speak();
+      } else {
+        window.speechSynthesis.onvoiceschanged = () => speak();
+        setTimeout(speak, 500);
+      }
+    });
+  }, []);
+
+  // ────────────────────────────────────────────────
+  //  REAL-TIME SPEECH RECOGNITION (Web Speech API)
+  // ────────────────────────────────────────────────
+  const startListening = useCallback(() => {
+    if (typeof window === 'undefined') return;
+
+    setError(null);
+
+    const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) {
+      setError('Speech recognition not supported. Please use Chrome or Edge.');
+      return;
+    }
+
+    const recognition = new SpeechRecognitionClass();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = '';
+      let final = finalTranscriptRef.current;
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          final += result[0].transcript + ' ';
+          finalTranscriptRef.current = final;
+        } else {
+          interim += result[0].transcript;
+        }
+      }
+
+      setTranscript(final);
+      setInterimTranscript(interim);
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        setError(`Speech recognition error: ${event.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      if (shouldRestartRef.current && recognitionRef.current === recognition) {
+        try {
+          recognition.start();
+        } catch {
+          setIsListening(false);
+          shouldRestartRef.current = false;
+        }
+      } else {
+        setIsListening(false);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    shouldRestartRef.current = true;
+    recognition.start();
+  }, []);
+
+  const stopListening = useCallback(() => {
+    shouldRestartRef.current = false;
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setIsListening(false);
+      setInterimTranscript('');
+    }
+  }, []);
+
+  // ────────────────────────────────────────────────
+  //  BACKGROUND AUDIO RECORDING (MediaRecorder API)
+  // ────────────────────────────────────────────────
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+
+      const recorder = new MediaRecorder(stream, { mimeType });
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        // Stream tracks are stopped in stopRecording
+      };
+
+      recorderRef.current = recorder;
+      recorder.start(1000); // collect chunks every second
+      setIsRecording(true);
+    } catch (err) {
+      console.error('Failed to start audio recording:', err);
+    }
+  }, []);
+
+  const stopRecording = useCallback((): Blob | null => {
+    let blob: Blob | null = null;
+
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.stop();
+    }
+
+    if (audioChunksRef.current.length > 0) {
+      blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+    }
+
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(t => t.stop());
+      audioStreamRef.current = null;
+    }
+
+    recorderRef.current = null;
+    audioChunksRef.current = [];
+    setIsRecording(false);
+
+    return blob;
+  }, []);
+
+  // ────────────────────────────────────────────────
+  //  COMBINED START / STOP  (recognition + recording)
+  // ────────────────────────────────────────────────
+  const startAnswer = useCallback(async () => {
+    await startRecording();
+    startListening();
+  }, [startRecording, startListening]);
+
+  const stopAnswer = useCallback((): Blob | null => {
+    stopListening();
+    return stopRecording();
+  }, [stopListening, stopRecording]);
+
+  // ────────────────────────────────────────────────
+  //  HELPERS
+  // ────────────────────────────────────────────────
+  const stopSpeaking = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    }
+  }, []);
+
+  const resetTranscript = useCallback(() => {
+    setTranscript('');
+    setInterimTranscript('');
+    finalTranscriptRef.current = '';
+  }, []);
+
   return {
-    room,
-    isConnected,
-    isSpeaking,
+    // Real-time transcript
+    transcript,
+    interimTranscript,
     isListening,
+    isSpeaking,
+    isRecording,
     error,
-    localVideoRef,
-    agentAudioRef,
-    connect,
-    disconnect,
-    startSpeaking,
+    // TTS
+    speakQuestion,
+    // Recognition
+    startListening,
+    stopListening,
+    // Recording
+    startRecording,
+    stopRecording,
+    // Combined
+    startAnswer,
+    stopAnswer,
+    // Helpers
     stopSpeaking,
+    resetTranscript,
   };
 }

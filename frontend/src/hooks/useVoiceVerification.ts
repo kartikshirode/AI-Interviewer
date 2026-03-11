@@ -124,17 +124,17 @@ export function useVoiceVerification() {
   }, []);
 
   const verifyAndProceed = useCallback(() => {
-    if (state.recordedBlob && state.audioLevel > 10) {
-      setState(s => ({ ...s, status: 'verified' }));
+    // User must have recorded and played back the audio
+    if (state.recordedBlob && state.status === 'verified') {
       return true;
     } else {
       setState(s => ({ 
         ...s, 
-        error: 'Audio quality too low. Please try again.' 
+        error: 'Please record your voice and play it back to verify.' 
       }));
       return false;
     }
-  }, [state.recordedBlob, state.audioLevel]);
+  }, [state.recordedBlob, state.status]);
 
   useEffect(() => {
     return () => {

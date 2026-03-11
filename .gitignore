@@ -23,16 +23,22 @@ yarn
 
 /
 out/
-dist# IDE
+dist
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.sublime-*
 
 # Database
 *.db
 *.sqlite
 *.sqlite3
+
+# Uploads
+backend/uploads/
 
 # OS
 .DS_Store
@@ -40,3 +46,13 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# Testing
+.pytest_cache/
+coverage/
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp

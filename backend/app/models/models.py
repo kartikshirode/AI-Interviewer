@@ -77,11 +77,15 @@ class Answer(Base):
     id = Column(Integer, primary_key=True, index=True)
     candidate_id = Column(Integer, ForeignKey("candidates.id"))
     question_id = Column(Integer, ForeignKey("questions.id"))
-    transcript = Column(Text, nullable=True)
+    transcript = Column(Text, nullable=True)           # real-time Web Speech API transcript
+    whisper_transcript = Column(Text, nullable=True)   # high-accuracy Whisper transcript
+    audio_path = Column(String, nullable=True)         # recorded audio file path
     video_path = Column(String, nullable=True)
     correctness = Column(Float, nullable=True)
     clarity = Column(Float, nullable=True)
     depth = Column(Float, nullable=True)
+    confidence_score = Column(Float, nullable=True)
+    feedback = Column(Text, nullable=True)
     is_flagged = Column(Boolean, default=False)
     flag_reason = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

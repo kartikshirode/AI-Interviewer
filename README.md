@@ -1,8 +1,8 @@
 # AI Interviewer
 
-A fully automated AI-powered interview platform for conducting technical interviews. Features video recording, speech-to-text transcription, AI answer evaluation, and proctoring - completely free to use.
+A fully automated AI-powered voice interview platform for conducting technical interviews. Features real-time voice conversation with AI, video recording, speech-to-text transcription, AI answer evaluation, and proctoring - completely free to use.
 
-## Features
+## Features  
 
 ### For Recruiters
 - Create interviews with custom topics and questions
@@ -14,12 +14,15 @@ A fully automated AI-powered interview platform for conducting technical intervi
 
 ### For Candidates
 - Simple registration via interview link
-- One-on-one question format with timer
+- **Voice-based AI interview** - Talk directly with an AI interviewer
+- Mandatory system check before interview
+- Voice verification - speak a phrase to verify mic works
 - Video and audio recording during interview
-- Screen sharing capability
+- Screen sharing (required)
 - Real-time proctoring feedback
 
 ### AI & Automation
+- **Voice Interview**: LiveKit for real-time voice conversation
 - **Speech-to-Text**: Local processing with faster-whisper (free, runs offline)
 - **Answer Evaluation**: Google Gemini API (free tier available)
 - **Proctoring**: Tab switching detection, clipboard monitoring, risk scoring
@@ -30,6 +33,7 @@ A fully automated AI-powered interview platform for conducting technical intervi
 |-----------|------------|
 | Backend | FastAPI, Python, SQLite |
 | Frontend | Next.js 14, React, Tailwind CSS |
+| Voice | LiveKit (free tier) |
 | Speech-to-Text | faster-whisper (local, free) |
 | AI Evaluation | Google Gemini API (free tier) |
 | Database | SQLite (dev) |
@@ -41,22 +45,36 @@ A fully automated AI-powered interview platform for conducting technical intervi
 - Node.js 18+
 - npm
 
-### Step 1: Clone & Install Backend Dependencies
+### Step 1: Clone & Install Dependencies
 
 ```bash
+# Backend
 cd backend
 pip install -r requirements.txt
+
+# Frontend
+cd frontend
+npm install
 ```
 
 ### Step 2: Configure API Keys
 
-Create a `backend/.env` file with your Gemini API key:
+Create a `backend/.env` file:
 
 ```env
+# Gemini API (for AI evaluation - free tier)
 GEMINI_API_KEY=your-gemini-api-key
+
+# LiveKit (for voice interview - free tier)
+# Get free keys at https://livekit.io
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=your-api-key
+LIVEKIT_API_SECRET=your-api-secret
 ```
 
-Get a free API key at: https://aistudio.google.com/app/apikey
+Get free keys:
+- Gemini API: https://aistudio.google.com/app/apikey
+- LiveKit: https://livekit.io
 
 ### Step 3: Start Backend
 
@@ -72,32 +90,42 @@ API Docs: http://localhost:8000/docs
 
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
 Frontend runs at: http://localhost:3000
 
-## How It Works
+## Interview Flow
 
-### 1. Recruiter Creates Interview
-1. Go to http://localhost:3000
-2. Click "Recruiter Login" → Sign up
-3. Create new interview with topics/questions
-4. Copy the shareable interview link
-
-### 2. Candidate Takes Interview
-1. Open the interview link
+### Candidate Flow
+```
+1. Open interview link
 2. Register with name/email
-3. Allow camera/microphone access
-4. Answer questions (video recorded)
-5. Submit interview
+3. System Check (mandatory):
+   - Camera permission
+   - Microphone permission  
+   - Screen share permission
+   - Internet speed test
+4. Voice Verification (mandatory):
+   - Speak phrase: "I am ready to start the interview"
+   - Record and verify voice
+5. Voice Interview with AI:
+   - AI asks questions verbally
+   - Candidate answers by voice (push-to-talk)
+   - Video is recorded
+6. Interview Complete
+```
 
-### 3. Recruiter Reviews
-1. Go to Dashboard → View Candidates
-2. Click "Transcribe" to convert video to text
-3. Click "Evaluate" to get AI scores
-4. View full report with scores and risk assessment
+### Recruiter Flow
+```
+1. Sign up/Login at /recruiter/login
+2. Create interview with topics
+3. Copy shareable link
+4. After candidate completes:
+   - Click "Transcribe" to convert video to text
+   - Click "Evaluate" to get AI scores
+   - View full report with scores and risk assessment
+```
 
 ## API Endpoints
 
@@ -118,14 +146,17 @@ Frontend runs at: http://localhost:3000
 - `POST /api/v1/candidate/candidate/{id}/evaluate` - Evaluate with AI
 - `GET /api/v1/candidate/candidate/{id}/report` - Get full report
 
+### Voice
+- `POST /api/v1/voice/token` - Get LiveKit token for voice interview
+
 ## Cost
 
 This project is **completely free** to use:
 
+- **LiveKit**: Free tier (unlimited minutes for development)
 - **faster-whisper**: Runs locally, no API costs
 - **Gemini API**: Free tier (15 requests/min, 1M tokens/month)
 - **SQLite**: Free, no setup required
-- **Next.js**: Free, open-source
 
 ## Project Structure
 
@@ -133,18 +164,34 @@ This project is **completely free** to use:
 AI-Interviewer/
 ├── backend/
 │   └── app/
-│       ├── routers/       # API endpoints
-│       ├── services/      # Business logic
-│       │   ├── speech_service.py     # Speech-to-text
-│       │   ├── evaluation_service.py # AI evaluation
-│       │   └── risk_engine.py        # Proctoring
-│       ├── models/        # Database models
-│       └── core/         # Config, security
+│       ├── routers/           # API endpoints
+│       │   ├── auth.py       # Authentication
+│       │   ├── interviews.py # Interview CRUD
+│       │   ├── candidate.py # Candidate operations
+│       │   ├── voice.py      # LiveKit voice
+│       │   └── video.py      # Video playback
+│       ├── services/         # Business logic
+│       │   ├── speech_service.py      # Speech-to-text
+│       │   ├── evaluation_service.py  # AI evaluation
+│       │   ├── risk_engine.py         # Proctoring
+│       │   └── livekit_service.py     # Voice tokens
+│       ├── models/           # Database models
+│       └── core/             # Config, security
 ├── frontend/
 │   └── src/
-│       └── app/
-│           ├── recruiter/      # Recruiter pages
-│           └── interview/      # Candidate pages
+│       ├── app/
+│       │   ├── page.tsx                    # Home page
+│       │   ├── recruiter/                   # Recruiter pages
+│       │   │   ├── login/
+│       │   │   └── dashboard/
+│       │   └── interview/                  # Candidate pages
+│       │       └── [link]/
+│       ├── hooks/
+│       │   ├── useProctoring.ts    # Proctoring
+│       │   ├── useSystemCheck.ts   # Device checks
+│       │   └── useVoiceVerification.ts # Voice verify
+│       └── services/
+│           └── api.ts            # API client
 └── README.md
 ```
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
@@ -67,11 +67,32 @@ def start_interview(interview_id: int, candidate_id: int, db: Session = Depends(
     db.commit()
     return {"status": "started", "candidate_id": candidate_id}
 
+def _transcribe_audio_background(answer_id: int, audio_path: str):
+    """Background task: run Whisper on recorded audio and update the answer."""
+    from app.core.database import SessionLocal
+    from app.services.speech_service import speech_service
+
+    db = SessionLocal()
+    try:
+        answer = db.query(Answer).filter(Answer.id == answer_id).first()
+        if answer and os.path.exists(audio_path):
+            transcript = speech_service.transcribe_audio(audio_path)
+            if transcript:
+                answer.whisper_transcript = transcript
+                db.commit()
+    except Exception as e:
+        print(f"Background transcription error for answer {answer_id}: {e}")
+    finally:
+        db.close()
+
+
 @router.post("/answer")
 async def submit_answer(
+    background_tasks: BackgroundTasks,
     candidate_id: int = Form(...),
     question_id: int = Form(...),
     transcript: Optional[str] = Form(None),
+    audio: Optional[UploadFile] = File(None),
     video: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
@@ -79,16 +100,27 @@ async def submit_answer(
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
+    audio_path = None
     video_path = None
-    if video:
-        file_ext = os.path.splitext(video.filename)[1]
+
+    # Save audio file (background-recorded WebM)
+    if audio:
+        file_ext = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
         file_name = f"{uuid.uuid4()}{file_ext}"
         file_path = UPLOAD_DIR / file_name
-        
+        content = await audio.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+        audio_path = str(file_path)
+
+    # Save video file (if provided)
+    if video:
+        file_ext = os.path.splitext(video.filename or "video.webm")[1] or ".webm"
+        file_name = f"{uuid.uuid4()}{file_ext}"
+        file_path = UPLOAD_DIR / file_name
         content = await video.read()
         with open(file_path, "wb") as f:
             f.write(content)
-        
         video_path = str(file_path)
     
     existing_answer = db.query(Answer).filter(
@@ -98,20 +130,30 @@ async def submit_answer(
     
     if existing_answer:
         existing_answer.transcript = transcript
+        if audio_path:
+            existing_answer.audio_path = audio_path
         if video_path:
             existing_answer.video_path = video_path
         db.commit()
+        db.refresh(existing_answer)
+        # Queue Whisper transcription in background
+        if audio_path:
+            background_tasks.add_task(_transcribe_audio_background, existing_answer.id, audio_path)
         return existing_answer
     else:
         answer = Answer(
             candidate_id=candidate_id,
             question_id=question_id,
             transcript=transcript,
+            audio_path=audio_path,
             video_path=video_path
         )
         db.add(answer)
         db.commit()
         db.refresh(answer)
+        # Queue Whisper transcription in background
+        if audio_path:
+            background_tasks.add_task(_transcribe_audio_background, answer.id, audio_path)
         return answer
 
 @router.post("/interview/{interview_id}/complete")
@@ -129,27 +171,37 @@ def complete_interview(interview_id: int, candidate_id: int, db: Session = Depen
 
 @router.post("/answer/{answer_id}/transcribe")
 def transcribe_answer(answer_id: int, db: Session = Depends(get_db)):
-    """Transcribe video/audio for an answer"""
+    """Transcribe audio/video for an answer using Whisper"""
     from app.services.speech_service import speech_service
     
     answer = db.query(Answer).filter(Answer.id == answer_id).first()
     if not answer:
         raise HTTPException(status_code=404, detail="Answer not found")
     
-    if not answer.video_path or not os.path.exists(answer.video_path):
-        return {"transcript": answer.transcript or "", "message": "No video file to transcribe"}
+    # Prefer audio file, fall back to video file
+    file_to_transcribe = None
+    if answer.audio_path and os.path.exists(answer.audio_path):
+        file_to_transcribe = answer.audio_path
+    elif answer.video_path and os.path.exists(answer.video_path):
+        file_to_transcribe = answer.video_path
+    
+    if not file_to_transcribe:
+        return {"transcript": answer.whisper_transcript or answer.transcript or "", "message": "No audio/video file to transcribe"}
     
     try:
-        transcript = speech_service.transcribe_video(answer.video_path)
-        answer.transcript = transcript
+        if file_to_transcribe.endswith(('.mp4', '.mkv', '.avi', '.mov')):
+            transcript = speech_service.transcribe_video(file_to_transcribe)
+        else:
+            transcript = speech_service.transcribe_audio(file_to_transcribe)
+        answer.whisper_transcript = transcript
         db.commit()
         return {"transcript": transcript, "status": "success"}
     except Exception as e:
-        return {"transcript": answer.transcript or "", "error": str(e)}
+        return {"transcript": answer.whisper_transcript or answer.transcript or "", "error": str(e)}
 
 @router.post("/candidate/{candidate_id}/transcribe-all")
 def transcribe_all_answers(candidate_id: int, db: Session = Depends(get_db)):
-    """Transcribe all answers for a candidate"""
+    """Transcribe all answers for a candidate using Whisper"""
     from app.services.speech_service import speech_service
     
     candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
@@ -160,10 +212,19 @@ def transcribe_all_answers(candidate_id: int, db: Session = Depends(get_db)):
     results = []
     
     for answer in answers:
-        if answer.video_path and os.path.exists(answer.video_path):
+        file_to_transcribe = None
+        if answer.audio_path and os.path.exists(answer.audio_path):
+            file_to_transcribe = answer.audio_path
+        elif answer.video_path and os.path.exists(answer.video_path):
+            file_to_transcribe = answer.video_path
+        
+        if file_to_transcribe:
             try:
-                transcript = speech_service.transcribe_video(answer.video_path)
-                answer.transcript = transcript
+                if file_to_transcribe.endswith(('.mp4', '.mkv', '.avi', '.mov')):
+                    transcript = speech_service.transcribe_video(file_to_transcribe)
+                else:
+                    transcript = speech_service.transcribe_audio(file_to_transcribe)
+                answer.whisper_transcript = transcript
                 db.commit()
                 results.append({"answer_id": answer.id, "transcript": transcript, "status": "success"})
             except Exception as e:
@@ -180,7 +241,9 @@ def evaluate_answer(answer_id: int, db: Session = Depends(get_db)):
     if not answer:
         raise HTTPException(status_code=404, detail="Answer not found")
     
-    if not answer.transcript:
+    # Prefer whisper_transcript (high accuracy) over real-time transcript
+    transcript = answer.whisper_transcript or answer.transcript
+    if not transcript:
         return {"error": "No transcript available for evaluation"}
     
     question = db.query(Question).filter(Question.id == answer.question_id).first()
@@ -195,7 +258,7 @@ def evaluate_answer(answer_id: int, db: Session = Depends(get_db)):
     
     evaluation = evaluation_service.evaluate_answer(
         question=question.question_text if question else "",
-        transcript=answer.transcript,
+        transcript=transcript,
         difficulty=difficulty,
         topic=topic
     )
@@ -203,6 +266,8 @@ def evaluate_answer(answer_id: int, db: Session = Depends(get_db)):
     answer.correctness = evaluation["correctness"]
     answer.clarity = evaluation["clarity"]
     answer.depth = evaluation["depth"]
+    answer.confidence_score = evaluation.get("confidence")
+    answer.feedback = evaluation.get("feedback", "")
     db.commit()
     
     return evaluation
@@ -223,7 +288,8 @@ def evaluate_candidate(candidate_id: int, db: Session = Depends(get_db)):
     
     answer_evaluations = []
     for answer in answers:
-        if not answer.transcript:
+        transcript = answer.whisper_transcript or answer.transcript
+        if not transcript:
             continue
             
         question = db.query(Question).filter(Question.id == answer.question_id).first()
@@ -238,7 +304,7 @@ def evaluate_candidate(candidate_id: int, db: Session = Depends(get_db)):
         
         evaluation = evaluation_service.evaluate_answer(
             question=question.question_text if question else "",
-            transcript=answer.transcript,
+            transcript=transcript,
             difficulty=difficulty,
             topic=topic
         )
@@ -246,11 +312,13 @@ def evaluate_candidate(candidate_id: int, db: Session = Depends(get_db)):
         answer.correctness = evaluation["correctness"]
         answer.clarity = evaluation["clarity"]
         answer.depth = evaluation["depth"]
+        answer.confidence_score = evaluation.get("confidence")
+        answer.feedback = evaluation.get("feedback", "")
         db.commit()
         
         answer_evaluations.append(evaluation)
     
-    all_transcripts = "\n\n".join([a.transcript for a in answers if a.transcript])
+    all_transcripts = "\n\n".join([(a.whisper_transcript or a.transcript) for a in answers if (a.whisper_transcript or a.transcript)])
     comm_eval = evaluation_service.evaluate_communication(all_transcripts, len(answers))
     
     final_scores = evaluation_service.calculate_final_score(answer_evaluations, comm_eval["communication_score"])

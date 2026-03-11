@@ -10,9 +10,9 @@ interface SpeedTestResult {
 }
 
 interface PermissionStatus {
-  camera: 'checking' | 'granted' | 'denied';
-  microphone: 'checking' | 'granted' | 'denied';
-  screen: 'checking' | 'granted' | 'denied';
+  camera: 'not-requested' | 'granted' | 'denied';
+  microphone: 'not-requested' | 'granted' | 'denied';
+  screen: 'not-requested' | 'granted' | 'denied';
 }
 
 interface DeviceInfo {
@@ -30,9 +30,9 @@ export function useSystemCheck() {
   });
   
   const [permissions, setPermissions] = useState<PermissionStatus>({
-    camera: 'checking',
-    microphone: 'checking',
-    screen: 'checking',
+    camera: 'not-requested',
+    microphone: 'not-requested',
+    screen: 'not-requested',
   });
   
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo>({
@@ -41,23 +41,9 @@ export function useSystemCheck() {
     deviceType: '',
   });
 
-  const [allChecksComplete, setAllChecksComplete] = useState(false);
-
   useEffect(() => {
     detectDevice();
-    checkPermissions();
   }, []);
-
-  useEffect(() => {
-    if (
-      permissions.camera !== 'checking' &&
-      permissions.microphone !== 'checking' &&
-      permissions.screen !== 'checking' &&
-      speedTest.status === 'complete'
-    ) {
-      setAllChecksComplete(true);
-    }
-  }, [permissions, speedTest]);
 
   const detectDevice = () => {
     const ua = navigator.userAgent;
@@ -85,34 +71,35 @@ export function useSystemCheck() {
     setDeviceInfo({ browser, os, deviceType });
   };
 
-  const checkPermissions = async () => {
-    // Check camera
+  const requestCamera = useCallback(async () => {
     try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      cameraStream.getTracks().forEach(track => track.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(track => track.stop());
       setPermissions(p => ({ ...p, camera: 'granted' }));
     } catch {
       setPermissions(p => ({ ...p, camera: 'denied' }));
     }
+  }, []);
 
-    // Check microphone
+  const requestMicrophone = useCallback(async () => {
     try {
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micStream.getTracks().forEach(track => track.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
       setPermissions(p => ({ ...p, microphone: 'granted' }));
     } catch {
       setPermissions(p => ({ ...p, microphone: 'denied' }));
     }
+  }, []);
 
-    // Check screen share
+  const requestScreen = useCallback(async () => {
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      screenStream.getTracks().forEach(track => track.stop());
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      stream.getTracks().forEach(track => track.stop());
       setPermissions(p => ({ ...p, screen: 'granted' }));
     } catch {
       setPermissions(p => ({ ...p, screen: 'denied' }));
     }
-  };
+  }, []);
 
   const runSpeedTest = useCallback(async () => {
     setSpeedTest(s => ({ ...s, status: 'testing' }));
@@ -175,8 +162,10 @@ export function useSystemCheck() {
     speedTest,
     permissions,
     deviceInfo,
-    allChecksComplete,
     runSpeedTest,
+    requestCamera,
+    requestMicrophone,
+    requestScreen,
     canProceed,
     getPermissionSummary,
   };

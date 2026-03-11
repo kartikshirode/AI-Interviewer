@@ -22,16 +22,26 @@ Evaluate the answer based on:
 1. Correctness (0-10): Is the technical content accurate?
 2. Clarity (0-10): Is the explanation clear and well-structured?
 3. Depth (0-10): Does the answer show good understanding of the topic?
+4. Confidence (0-10): Does the candidate sound confident and assertive?
+
+Also compute an overall score (0-100) based on weighted combination:
+- Technical accuracy (correctness + depth): 60%
+- Communication (clarity): 25%
+- Confidence: 15%
 
 Difficulty level: {difficulty}
 {f"Topic: {topic}" if topic else ""}
 
 Provide a JSON response with:
 {{
+    "score": <overall score 0-100>,
     "correctness": <score 0-10>,
     "clarity": <score 0-10>,
     "depth": <score 0-10>,
-    "feedback": "<brief feedback on the answer>",
+    "confidence": <score 0-10>,
+    "technical_accuracy": <score 0-10>,
+    "communication": <score 0-10>,
+    "feedback": "<detailed feedback on the answer>",
     "strengths": ["<strength 1>", "<strength 2>"],
     "areas_for_improvement": ["<area 1>", "<area 2>"]
 }}
@@ -43,15 +53,19 @@ Be strict but fair in your evaluation."""
                 f"{system_prompt}\n\nQuestion: {question}\n\nAnswer: {transcript}",
                 generation_config={
                     "temperature": 0.3,
-                    "max_output_tokens": 500
+                    "max_output_tokens": 600
                 }
             )
             
             result = json.loads(response.text)
             return {
+                "score": result.get("score", 50),
                 "correctness": result.get("correctness", 5),
                 "clarity": result.get("clarity", 5),
                 "depth": result.get("depth", 5),
+                "confidence": result.get("confidence", 5),
+                "technical_accuracy": result.get("technical_accuracy", 5),
+                "communication": result.get("communication", 5),
                 "feedback": result.get("feedback", ""),
                 "strengths": result.get("strengths", []),
                 "areas_for_improvement": result.get("areas_for_improvement", [])
@@ -59,9 +73,13 @@ Be strict but fair in your evaluation."""
         except Exception as e:
             print(f"Error evaluating answer: {e}")
             return {
+                "score": 50,
                 "correctness": 5,
                 "clarity": 5,
                 "depth": 5,
+                "confidence": 5,
+                "technical_accuracy": 5,
+                "communication": 5,
                 "feedback": "Evaluation failed",
                 "strengths": [],
                 "areas_for_improvement": []

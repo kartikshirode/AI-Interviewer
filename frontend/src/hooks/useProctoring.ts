@@ -23,7 +23,7 @@ const SUSPICIOUS_KEYWORDS = [
   'answer', 'solution', 'cheat', 'exam', 'test'
 ];
 
-export function useProctoring(videoRef: React.RefObject<HTMLVideoElement>) {
+export function useProctoring(videoRef: React.RefObject<HTMLVideoElement | null>) {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [stats, setStats] = useState<ProctoringStats>({
     tabSwitchCount: 0,
