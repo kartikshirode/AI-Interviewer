@@ -53,6 +53,8 @@ export function useVoiceInterview() {
   // ── Real-time transcript state (Web Speech API) ──
   const [transcript, setTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
+  const [combinedTranscript, setCombinedTranscript] = useState('');
+  const [lastSpeechAt, setLastSpeechAt] = useState<number | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +77,15 @@ export function useVoiceInterview() {
       shouldRestartRef.current = false;
       recognitionRef.current?.stop();
       recognitionRef.current = null;
-      stopRecording();
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        recorderRef.current.stop();
+      }
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(t => t.stop());
+        audioStreamRef.current = null;
+      }
+      recorderRef.current = null;
+      audioChunksRef.current = [];
       if (typeof window !== 'undefined') {
         window.speechSynthesis?.cancel();
       }
@@ -156,8 +166,17 @@ export function useVoiceInterview() {
         }
       }
 
-      setTranscript(final);
-      setInterimTranscript(interim);
+      const normalizedFinal = final.trim();
+      const normalizedInterim = interim.trim();
+      const merged = [normalizedFinal, normalizedInterim].filter(Boolean).join(' ').trim();
+
+      setTranscript(normalizedFinal);
+      setInterimTranscript(normalizedInterim);
+      setCombinedTranscript(merged);
+
+      if (merged.length > 0) {
+        setLastSpeechAt(Date.now());
+      }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
@@ -191,6 +210,7 @@ export function useVoiceInterview() {
       recognitionRef.current = null;
       setIsListening(false);
       setInterimTranscript('');
+      setCombinedTranscript(finalTranscriptRef.current.trim());
     }
   }, []);
 
@@ -276,6 +296,8 @@ export function useVoiceInterview() {
   const resetTranscript = useCallback(() => {
     setTranscript('');
     setInterimTranscript('');
+    setCombinedTranscript('');
+    setLastSpeechAt(null);
     finalTranscriptRef.current = '';
   }, []);
 
@@ -283,6 +305,8 @@ export function useVoiceInterview() {
     // Real-time transcript
     transcript,
     interimTranscript,
+    combinedTranscript,
+    lastSpeechAt,
     isListening,
     isSpeaking,
     isRecording,

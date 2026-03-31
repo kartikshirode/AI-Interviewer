@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import { useProctoring } from '@/hooks/useProctoring';
 import { useSystemCheck } from '@/hooks/useSystemCheck';
 import { useVoiceVerification } from '@/hooks/useVoiceVerification';
@@ -30,6 +31,7 @@ interface Candidate {
 }
 
 type InterviewState = 'loading' | 'not-found' | 'register' | 'system-check' | 'voice-verify' | 'ready' | 'interview' | 'completed';
+const AUTO_SUBMIT_SILENCE_MS = 6000;
 
 export default function CandidateInterviewPage() {
   const params = useParams();
@@ -52,11 +54,20 @@ export default function CandidateInterviewPage() {
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const autoSubmitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const submitAnswerRef = useRef<(() => Promise<void>) | null>(null);
 
   const proctoring = useProctoring(localVideoRef);
   const systemCheck = useSystemCheck();
   const voiceVerify = useVoiceVerification();
   const voiceInterview = useVoiceInterview();
+
+  const clearAutoSubmitTimer = useCallback(() => {
+    if (autoSubmitTimerRef.current) {
+      clearTimeout(autoSubmitTimerRef.current);
+      autoSubmitTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     loadInterview();
@@ -68,17 +79,20 @@ export default function CandidateInterviewPage() {
       return () => clearInterval(timer);
     }
     if (state === 'interview' && timeLeft === 0 && !submitting) {
-      submitAnswer();
+      clearAutoSubmitTimer();
+      submitAnswerRef.current?.();
     }
-  }, [state, timeLeft]);
+  }, [state, timeLeft, submitting, clearAutoSubmitTimer]);
 
   useEffect(() => {
     return () => {
+      clearAutoSubmitTimer();
       stopAllMedia();
     };
-  }, []);
+  }, [clearAutoSubmitTimer]);
 
   const stopAllMedia = () => {
+    clearAutoSubmitTimer();
     voiceInterview.stopSpeaking();
     voiceInterview.stopAnswer();
     if (mediaStreamRef.current) {
@@ -209,7 +223,9 @@ export default function CandidateInterviewPage() {
     setSubmitting(true);
 
     try {
+      clearAutoSubmitTimer();
       voiceInterview.stopSpeaking();
+      const transcriptForSubmission = voiceInterview.combinedTranscript.trim();
 
       // Stop both recognition + recording, get the audio blob
       const audioBlob = voiceInterview.stopAnswer();
@@ -217,7 +233,7 @@ export default function CandidateInterviewPage() {
       const formData = new FormData();
       formData.append('candidate_id', candidate.id.toString());
       formData.append('question_id', questions[currentQuestionIndex].id.toString());
-      formData.append('transcript', voiceInterview.transcript || 'No answer provided');
+      formData.append('transcript', transcriptForSubmission || 'No answer provided');
 
       // Attach recorded audio for backend Whisper processing
       if (audioBlob && audioBlob.size > 0) {
@@ -252,6 +268,32 @@ export default function CandidateInterviewPage() {
     }
   };
 
+  submitAnswerRef.current = submitAnswer;
+
+  useEffect(() => {
+    if (state !== 'interview' || submitting) return;
+    if (voiceInterview.isSpeaking || !voiceInterview.isListening) return;
+    if (!voiceInterview.lastSpeechAt) return;
+    if (!voiceInterview.combinedTranscript.trim()) return;
+
+    clearAutoSubmitTimer();
+
+    autoSubmitTimerRef.current = setTimeout(() => {
+      submitAnswerRef.current?.();
+    }, AUTO_SUBMIT_SILENCE_MS);
+
+    return () => clearAutoSubmitTimer();
+  }, [
+    state,
+    submitting,
+    currentQuestionIndex,
+    voiceInterview.isSpeaking,
+    voiceInterview.isListening,
+    voiceInterview.lastSpeechAt,
+    voiceInterview.combinedTranscript,
+    clearAutoSubmitTimer,
+  ]);
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -282,12 +324,12 @@ export default function CandidateInterviewPage() {
           </div>
           <h1 className="text-3xl font-bold text-white mb-4">Interview Not Found</h1>
           <p className="text-slate-400 mb-8">This interview link may be invalid or expired.</p>
-          <a href="/" className="inline-flex items-center gap-2 text-cyan-400 hover:text-cyan-300 transition">
+          <Link href="/" className="inline-flex items-center gap-2 text-cyan-400 hover:text-cyan-300 transition">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
             Go to Home
-          </a>
+          </Link>
         </div>
       </div>
     );
@@ -519,8 +561,8 @@ export default function CandidateInterviewPage() {
           <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/30 rounded-2xl p-8 mb-8">
             <div className="text-center">
               <p className="text-slate-400 text-sm mb-4">Please speak this exact phrase:</p>
-              <p className="text-2xl font-semibold text-white mb-4">"{verificationPhrase}"</p>
-              <p className="text-slate-500 text-sm">Make sure your microphone is working and you're in a quiet environment</p>
+              <p className="text-2xl font-semibold text-white mb-4">&quot;{verificationPhrase}&quot;</p>
+              <p className="text-slate-500 text-sm">Make sure your microphone is working and you&apos;re in a quiet environment</p>
             </div>
           </div>
 
@@ -735,21 +777,25 @@ export default function CandidateInterviewPage() {
               </div>
 
               <div className="min-h-[150px] p-4 bg-slate-900/50 border border-slate-700 rounded-xl">
-                {voiceInterview.transcript || voiceInterview.interimTranscript ? (
-                  <p className="text-white leading-relaxed">
-                    {voiceInterview.transcript}
-                    <span className="text-slate-500 italic">{voiceInterview.interimTranscript}</span>
-                  </p>
-                ) : (
-                  <p className="text-slate-500 italic">
-                    {voiceInterview.isSpeaking 
+                <textarea
+                  readOnly
+                  value={voiceInterview.combinedTranscript}
+                  placeholder={
+                    voiceInterview.isSpeaking
                       ? 'Listen to the question, then speak your answer...'
-                      : voiceInterview.isListening 
-                        ? 'Start speaking your answer...' 
-                        : 'Waiting...'}
-                  </p>
-                )}
+                      : voiceInterview.isListening
+                        ? 'Start speaking your answer...'
+                        : 'Waiting...'
+                  }
+                  className="w-full min-h-[120px] bg-transparent text-white placeholder:text-slate-500 resize-none outline-none leading-relaxed"
+                />
               </div>
+
+              {voiceInterview.isListening && voiceInterview.combinedTranscript && (
+                <div className="mt-3 text-xs text-slate-400">
+                  Answer auto-submits after 6 seconds of silence.
+                </div>
+              )}
 
               {voiceInterview.error && (
                 <div className="mt-3 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">
