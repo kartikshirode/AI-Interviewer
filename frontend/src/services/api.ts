@@ -1,7 +1,12 @@
+// NOTE: tokens are kept in localStorage. This is XSS-readable; switching to
+// httpOnly cookies requires a backend cookie-session refactor and is tracked
+// as a security follow-up (audit ISSUE-22).
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
+export const API_BASE = API_BASE_URL;
 
 class ApiService {
   private token: string | null = null;
+  private candidateToken: string | null = null;
 
   setToken(token: string | null) {
     this.token = token;
@@ -22,39 +27,71 @@ class ApiService {
     return null;
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-    const token = this.getToken();
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
+  setCandidateToken(token: string | null) {
+    this.candidateToken = token;
+    if (typeof window !== 'undefined') {
+      if (token) {
+        sessionStorage.setItem('candidate_token', token);
+      } else {
+        sessionStorage.removeItem('candidate_token');
+      }
+    }
+  }
+
+  getCandidateToken(): string | null {
+    if (this.candidateToken) return this.candidateToken;
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('candidate_token');
+    }
+    return null;
+  }
+
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit & { useCandidateToken?: boolean; rawBody?: boolean } = {},
+  ): Promise<T> {
+    const { useCandidateToken, rawBody, ...fetchOptions } = options;
+    const token = useCandidateToken ? this.getCandidateToken() : this.getToken();
+    const headers: Record<string, string> = {
+      ...(rawBody ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
+      ...((options.headers as Record<string, string>) || {}),
     };
 
     const url = `${API_BASE_URL}${endpoint}`;
-    console.log(`API Request: ${options.method || 'GET'} ${url}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`API Request: ${fetchOptions.method || 'GET'} ${url}`);
+    }
 
+    let response: Response;
     try {
-      const response = await fetch(url, {
-        ...options,
+      response = await fetch(url, {
+        ...fetchOptions,
         headers,
       });
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
-        throw new Error(error.detail || `Request failed with status ${response.status}`);
-      }
-
-      if (response.status === 204) {
-        return {} as T;
-      }
-
-      return response.json();
     } catch (err: any) {
-      if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
-        throw new Error('Cannot connect to backend server. Is it running on http://127.0.0.1:8000?');
+      if (err?.name === 'TypeError') {
+        throw new Error(
+          `Cannot connect to backend server at ${API_BASE_URL}. Is it running?`,
+        );
       }
       throw err;
     }
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({
+        detail: `HTTP ${response.status}: ${response.statusText}`,
+      }));
+      throw new Error(
+        errorBody.detail || `Request failed with status ${response.status}`,
+      );
+    }
+
+    if (response.status === 204) {
+      return {} as T;
+    }
+
+    return response.json();
   }
 
   // Auth
@@ -76,6 +113,7 @@ class ApiService {
 
   logout() {
     this.setToken(null);
+    this.setCandidateToken(null);
   }
 
   // Interviews
@@ -99,8 +137,10 @@ class ApiService {
   }
 
   async addCustomQuestion(interviewId: number, questionText: string) {
-    return this.request(`/interviews/${interviewId}/questions?question_text=${encodeURIComponent(questionText)}`, {
+    // Body-based — matches the backend Pydantic model (ISSUE-17/24).
+    return this.request(`/interviews/${interviewId}/questions`, {
       method: 'POST',
+      body: JSON.stringify({ question_text: questionText }),
     });
   }
 
@@ -126,32 +166,53 @@ class ApiService {
   }
 
   async registerCandidate(interviewId: number, name: string, email: string) {
-    return this.request(`/candidate/interview/${interviewId}/register`, {
-      method: 'POST',
-      body: JSON.stringify({ name, email }),
-    });
+    const result = await this.request<{ session_token: string; id: number; interview_id: number; status: string; final_score: number | null; communication_score: number | null; cheating_risk: string; name: string; email: string }>(
+      `/candidate/interview/${interviewId}/register`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ name, email }),
+      },
+    );
+    if (result?.session_token) {
+      this.setCandidateToken(result.session_token);
+    }
+    return result;
   }
 
   async getCandidateQuestions(interviewId: number) {
-    return this.request(`/candidate/interview/${interviewId}/questions`);
-  }
-
-  async startCandidateInterview(interviewId: number, candidateId: number) {
-    return this.request(`/candidate/interview/${interviewId}/start?candidate_id=${candidateId}`, {
-      method: 'POST',
+    return this.request(`/candidate/interview/${interviewId}/questions`, {
+      useCandidateToken: true,
     });
   }
 
-  async submitAnswer(candidateId: number, questionId: number, transcript: string) {
-    return this.request(`/candidate/answer?candidate_id=${candidateId}&question_id=${questionId}`, {
+  async startCandidateInterview(interviewId: number) {
+    return this.request(`/candidate/interview/${interviewId}/start`, {
       method: 'POST',
-      body: JSON.stringify({ transcript }),
+      useCandidateToken: true,
     });
   }
 
-  async completeInterview(interviewId: number, candidateId: number) {
-    return this.request(`/candidate/interview/${interviewId}/complete?candidate_id=${candidateId}`, {
+  async submitAnswerForm(formData: FormData) {
+    const token = this.getCandidateToken();
+    const url = `${API_BASE_URL}/candidate/answer`;
+    const response = await fetch(url, {
       method: 'POST',
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) {
+      const errorBody = await response
+        .json()
+        .catch(() => ({ detail: `HTTP ${response.status}` }));
+      throw new Error(errorBody.detail || `Submit failed (${response.status})`);
+    }
+    return response.json();
+  }
+
+  async completeInterview(interviewId: number) {
+    return this.request(`/candidate/interview/${interviewId}/complete`, {
+      method: 'POST',
+      useCandidateToken: true,
     });
   }
 
@@ -179,14 +240,6 @@ class ApiService {
   async getProctoringReport(candidateId: number) {
     return this.request(`/candidate/candidate/${candidateId}/proctoring/report`, {
       method: 'POST',
-    });
-  }
-
-  // Voice Interview
-  async getVoiceToken(interviewId: number, candidateId: number) {
-    return this.request('/voice/token', {
-      method: 'POST',
-      body: JSON.stringify({ interview_id: interviewId, candidate_id: candidateId }),
     });
   }
 }

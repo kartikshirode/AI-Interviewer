@@ -86,7 +86,7 @@ export default function InterviewPage() {
 
           <div className="mt-6 pt-6 border-t border-slate-700/50">
             <p className="text-center text-slate-500 text-sm mb-4">
-              Don't have an interview link?
+              Don&apos;t have an interview link?
             </p>
             <Link
               href="/"

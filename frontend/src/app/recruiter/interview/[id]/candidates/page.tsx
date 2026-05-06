@@ -102,6 +102,16 @@ export default function InterviewCandidatesPage() {
     }
   };
 
+  // Plain text color for places where the chip background would clash with
+  // the surrounding card (e.g. the big number on the score card).
+  const getRiskTextColor = (risk: string) => {
+    switch (risk) {
+      case 'high': return 'text-red-400';
+      case 'medium': return 'text-yellow-400';
+      default: return 'text-green-400';
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'completed': return 'bg-green-500/20 text-green-400 border border-green-500/30';
@@ -265,7 +275,7 @@ export default function InterviewCandidatesPage() {
                 </div>
                 <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 text-center">
                   <p className="text-sm text-slate-400 mb-1">Cheating Risk</p>
-                  <p className={`text-3xl font-bold ${getRiskColor(report.scores.cheating_risk)}`}>
+                  <p className={`text-3xl font-bold ${getRiskTextColor(report.scores.cheating_risk)}`}>
                     {report.scores.cheating_risk}
                   </p>
                 </div>

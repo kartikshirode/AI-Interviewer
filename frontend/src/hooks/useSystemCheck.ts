@@ -105,9 +105,17 @@ export function useSystemCheck() {
     setSpeedTest(s => ({ ...s, status: 'testing' }));
 
     try {
-      // Test latency by measuring time to fetch a small file
+      // Test latency by measuring time for a tiny request to Cloudflare's
+      // /cdn-cgi/trace endpoint. (Avoids using google's favicon which has
+      // unpredictable caching/CORS and was a privacy ping for every visitor.)
       const startLatency = performance.now();
-      await fetch('https://www.google.com/favicon.ico', { mode: 'no-cors' });
+      try {
+        await fetch('https://speed.cloudflare.com/cdn-cgi/trace', {
+          cache: 'no-store',
+        });
+      } catch {
+        // Network might block Cloudflare; we still want a non-fatal latency.
+      }
       const latency = Math.round(performance.now() - startLatency);
 
       // Test download speed using a small test file

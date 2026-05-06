@@ -1,52 +1,67 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from datetime import datetime
 
+
 class RecruiterBase(BaseModel):
     email: EmailStr
-    full_name: Optional[str] = None
-    company: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, max_length=200)
+    company: Optional[str] = Field(default=None, max_length=200)
+
 
 class RecruiterCreate(RecruiterBase):
-    password: str
+    password: str = Field(..., min_length=8, max_length=200)
+
 
 class RecruiterResponse(RecruiterBase):
     id: int
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
+
 class TopicBase(BaseModel):
-    name: str
-    description: Optional[str] = None
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=500)
+
 
 class TopicResponse(TopicBase):
     id: int
-    
+
     class Config:
         from_attributes = True
 
+
 class QuestionBase(BaseModel):
-    question_text: str
+    question_text: str = Field(..., min_length=1, max_length=2000)
     topic_id: Optional[int] = None
     source: str = "system"
+
 
 class QuestionResponse(QuestionBase):
     id: int
     interview_id: int
-    
+
     class Config:
         from_attributes = True
 
+
+class QuestionCreateBody(BaseModel):
+    """Body for the recruiter-side custom-question endpoint (ISSUE-17)."""
+    question_text: str = Field(..., min_length=1, max_length=2000)
+
+
 class InterviewBase(BaseModel):
-    role: str
-    difficulty: str = "medium"
-    num_questions: int = 5
+    role: str = Field(..., min_length=1, max_length=200)
+    difficulty: str = Field(default="medium", max_length=20)
+    num_questions: int = Field(default=5, ge=1, le=50)
+
 
 class InterviewCreate(InterviewBase):
     topics: List[int] = []
     custom_questions: List[str] = []
+
 
 class InterviewResponse(InterviewBase):
     id: int
@@ -54,35 +69,60 @@ class InterviewResponse(InterviewBase):
     interview_link: str
     status: str
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
+
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=1, max_length=200)
+
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
+
 class CandidateBase(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=200)
     email: EmailStr
+
 
 class CandidateCreate(CandidateBase):
     pass
+
 
 class CandidateResponse(CandidateBase):
     id: int
     interview_id: int
     status: str
-    final_score: Optional[float]
-    communication_score: Optional[float]
+    final_score: Optional[float] = None
+    communication_score: Optional[float] = None
     cheating_risk: str
-    
+
     class Config:
         from_attributes = True
+
+
+class CandidateRegistrationResponse(CandidateResponse):
+    """Returned at the end of registration; includes the candidate session
+    token used to authenticate subsequent candidate-flow requests."""
+    session_token: str
+
+
+class CandidateSummary(BaseModel):
+    id: int
+    name: str
+    email: EmailStr
+    status: str
+    final_score: Optional[float] = None
+    communication_score: Optional[float] = None
+    cheating_risk: str
+
+    class Config:
+        from_attributes = True
+
 
 class ProctoringData(BaseModel):
     candidate_id: int

@@ -194,25 +194,31 @@ export function useProctoring(videoRef: React.RefObject<HTMLVideoElement | null>
   };
 }
 
-// Face detection hook (requires face-api.js)
+// =====================================================================
+// STUB: useFaceDetection
+// =====================================================================
+// TODO(proctoring): wire up real face detection (e.g. face-api.js or
+// MediaPipe FaceDetector). Until then, this hook returns placeholder
+// values and is NOT a real source of proctoring signal. Do not display
+// these numbers as if they reflect what the camera saw.
 export function useFaceDetection(videoRef: React.RefObject<HTMLVideoElement>) {
   const [faces, setFaces] = useState<number>(0);
   const [isLooking, setIsLooking] = useState(true);
   const [modelLoaded, setModelLoaded] = useState(false);
 
-  const detectFaces = useCallback(async () => {
-    // This would require face-api.js to be loaded
-    // For now, we'll implement a placeholder
-    if (!videoRef.current || !modelLoaded) return;
+  // Warn once per mount so it shows up in dev tools instead of silently
+  // pretending to work.
+  useEffect(() => {
+    console.warn(
+      '[proctoring] useFaceDetection is a stub — `faces` and `isLooking` are placeholders, not actual detections.',
+    );
+  }, []);
 
-    try {
-      // Placeholder for face detection
-      // In production, use: const detections = await faceapi.detectAllFaces(videoRef.current)
-      setFaces(1); // Assume single face
-      setIsLooking(true);
-    } catch (error) {
-      console.error('Face detection error:', error);
-    }
+  const detectFaces = useCallback(async () => {
+    if (!videoRef.current || !modelLoaded) return;
+    // STUB: not a real detection.
+    setFaces(1);
+    setIsLooking(true);
   }, [videoRef, modelLoaded]);
 
   return {
@@ -220,24 +226,29 @@ export function useFaceDetection(videoRef: React.RefObject<HTMLVideoElement>) {
     isLooking,
     modelLoaded,
     detectFaces,
+    isStub: true as const,
   };
 }
 
-// Screen text detection hook (requires Tesseract.js)
+// =====================================================================
+// STUB: useScreenTextDetection
+// =====================================================================
+// TODO(proctoring): integrate Tesseract.js / a real OCR pass over the
+// shared screen frame. Until then, `suspiciousText` will only contain
+// matches from `checkForSuspiciousText` calls the caller makes manually.
 export function useScreenTextDetection(videoRef: React.RefObject<HTMLVideoElement>) {
   const [suspiciousText, setSuspiciousText] = useState<string[]>([]);
   const [isScanning, setIsScanning] = useState(false);
 
+  useEffect(() => {
+    console.warn(
+      '[proctoring] useScreenTextDetection is a stub — no OCR is actually performed.',
+    );
+  }, []);
+
   const scanScreen = useCallback(async () => {
     if (!videoRef.current || !isScanning) return;
-
-    try {
-      // This would require Tesseract.js
-      // For now, we'll keep it as a placeholder
-      // In production: const { data: { text } } = await Tesseract.recognize(videoElement)
-    } catch (error) {
-      console.error('OCR error:', error);
-    }
+    // STUB: no OCR is performed. See TODO above.
   }, [videoRef, isScanning]);
 
   const checkForSuspiciousText = useCallback((text: string) => {
@@ -254,6 +265,7 @@ export function useScreenTextDetection(videoRef: React.RefObject<HTMLVideoElemen
     setIsScanning,
     scanScreen,
     checkForSuspiciousText,
+    isStub: true as const,
   };
 }
 

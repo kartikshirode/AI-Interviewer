@@ -84,9 +84,17 @@ export default function RecruiterDashboard() {
     router.push('/');
   };
 
-  const copyLink = (link: string) => {
-    navigator.clipboard.writeText(`${window.location.origin}/interview/${link}`);
-    alert('Link copied to clipboard!');
+  const copyLink = async (link: string) => {
+    const url = `${window.location.origin}/interview/${link}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      alert('Link copied to clipboard!');
+    } catch (err) {
+      // Clipboard API can reject (insecure context, permissions). Surface the
+      // URL so the user can copy it manually.
+      console.error('Clipboard write failed:', err);
+      window.prompt('Copy this interview link:', url);
+    }
   };
 
   const getDifficultyColor = (difficulty: string) => {

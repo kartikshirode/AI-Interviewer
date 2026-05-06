@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { api } from '@/services/api';
 import { useProctoring } from '@/hooks/useProctoring';
 import { useSystemCheck } from '@/hooks/useSystemCheck';
 import { useVoiceVerification } from '@/hooks/useVoiceVerification';
@@ -105,13 +106,9 @@ export default function CandidateInterviewPage() {
 
   const loadInterview = async () => {
     try {
-      const data = await (await fetch(`http://localhost:8000/api/v1/candidate/interview/${interviewLink}`)).json();
-      if (data.detail) {
-        setState('not-found');
-      } else {
-        setInterview(data);
-        setState('register');
-      }
+      const data = await api.getInterviewByLink(interviewLink);
+      setInterview(data as Interview);
+      setState('register');
     } catch (err) {
       setState('not-found');
     }
@@ -122,13 +119,8 @@ export default function CandidateInterviewPage() {
     if (!interview) return;
 
     try {
-      const candidateData = await fetch(`http://localhost:8000/api/v1/candidate/interview/${interview.id}/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email })
-      });
-      const newCandidate = await candidateData.json();
-      setCandidate(newCandidate);
+      const newCandidate = await api.registerCandidate(interview.id, name, email);
+      setCandidate(newCandidate as Candidate);
       setState('system-check');
     } catch (err) {
       alert('Registration failed. Please try again.');
@@ -149,13 +141,10 @@ export default function CandidateInterviewPage() {
     if (!interview || !candidate) return;
 
     try {
-      const questionsData = await fetch(`http://localhost:8000/api/v1/candidate/interview/${interview.id}/questions`);
-      const questionsList = await questionsData.json();
+      const questionsList = (await api.getCandidateQuestions(interview.id)) as Question[];
       setQuestions(questionsList);
-      
-      await fetch(`http://localhost:8000/api/v1/candidate/interview/${interview.id}/start?candidate_id=${candidate.id}`, {
-        method: 'POST'
-      });
+
+      await api.startCandidateInterview(interview.id);
 
       await startMediaCapture();
       proctoring.startMonitoring();
@@ -240,10 +229,7 @@ export default function CandidateInterviewPage() {
         formData.append('audio', audioBlob, 'answer.webm');
       }
 
-      await fetch(`http://localhost:8000/api/v1/candidate/answer`, {
-        method: 'POST',
-        body: formData
-      });
+      await api.submitAnswerForm(formData);
 
       if (currentQuestionIndex < questions.length - 1) {
         const nextIndex = currentQuestionIndex + 1;
@@ -256,9 +242,9 @@ export default function CandidateInterviewPage() {
         voiceInterview.startAnswer();
       } else {
         stopAllMedia();
-        await fetch(`http://localhost:8000/api/v1/candidate/interview/${interview?.id}/complete?candidate_id=${candidate.id}`, {
-          method: 'POST'
-        });
+        if (interview) {
+          await api.completeInterview(interview.id);
+        }
         setState('completed');
       }
     } catch (err) {

@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 class RiskEngine:
@@ -24,7 +24,7 @@ class RiskEngine:
     def __init__(self):
         self.events: List[Dict] = []
 
-    def add_event(self, event_type: str, timestamp: int = None, details: str = None):
+    def add_event(self, event_type: str, timestamp: Optional[int] = None, details: Optional[str] = None):
         self.events.append({
             "type": event_type,
             "timestamp": timestamp or int(datetime.utcnow().timestamp() * 1000),
@@ -135,4 +135,6 @@ class RiskEngine:
         return engine.get_risk_report()
 
 
-risk_engine = RiskEngine()
+# NOTE: do not export a module-level singleton with mutable per-event state —
+# RiskEngine is now constructed per-request in the call sites that need it.
+
