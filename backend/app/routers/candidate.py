@@ -12,10 +12,13 @@ Authentication model:
   * Transcribe-all, evaluate, proctoring report, candidate report.
 """
 
+import logging
 import os
 import uuid
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import (
     APIRouter,
@@ -35,6 +38,7 @@ from app.core.database import get_db
 from app.core.security import create_candidate_token
 from app.models.models import Answer, Candidate, Interview, Question, Recruiter, Topic
 from app.models.schemas import (
+    AnswerSubmittedResponse,
     CandidateCreate,
     CandidateRegistrationResponse,
     CandidateResponse,
@@ -248,25 +252,54 @@ def start_interview(
 
 
 def _transcribe_audio_background(answer_id: int, audio_path: str):
-    """Background task: run Whisper on recorded audio and update the answer."""
+    """Background task: run Whisper on recorded audio and update the answer.
+
+    Failures are logged and persisted onto `Answer.flag_reason` so the
+    recruiter sees that transcription couldn't run, instead of silently
+    leaving `whisper_transcript = NULL` and pretending nothing happened.
+    """
     from app.core.database import SessionLocal
     from app.services.speech_service import speech_service
 
     db = SessionLocal()
     try:
         answer = db.query(Answer).filter(Answer.id == answer_id).first()
-        if answer and os.path.exists(audio_path):
+        if not answer:
+            logger.warning("Background transcription: answer %s not found", answer_id)
+            return
+        if not os.path.exists(audio_path):
+            logger.warning(
+                "Background transcription: audio file missing for answer %s at %s",
+                answer_id,
+                audio_path,
+            )
+            answer.flag_reason = "audio_missing"
+            db.commit()
+            return
+        try:
             transcript = speech_service.transcribe_audio(audio_path)
-            if transcript:
-                answer.whisper_transcript = transcript
-                db.commit()
-    except Exception as e:
-        print(f"Background transcription error for answer {answer_id}: {e}")
+        except Exception:
+            logger.exception(
+                "Background transcription failed for answer %s", answer_id
+            )
+            answer.flag_reason = "transcription_failed"
+            db.commit()
+            return
+        if transcript:
+            answer.whisper_transcript = transcript
+        else:
+            # Whisper returned empty — likely silence or unreadable audio.
+            answer.flag_reason = "transcription_empty"
+        db.commit()
+    except Exception:
+        logger.exception(
+            "Unexpected error in background transcription for answer %s", answer_id
+        )
     finally:
         db.close()
 
 
-@router.post("/answer")
+@router.post("/answer", response_model=AnswerSubmittedResponse)
 async def submit_answer(
     background_tasks: BackgroundTasks,
     candidate_id: int = Form(...),

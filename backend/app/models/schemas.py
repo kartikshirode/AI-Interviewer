@@ -124,6 +124,18 @@ class CandidateSummary(BaseModel):
         from_attributes = True
 
 
+class AnswerSubmittedResponse(BaseModel):
+    """Response for POST /candidate/answer. Intentionally narrow — does NOT
+    leak server-side fields like `audio_path` / `video_path` to the candidate."""
+    id: int
+    candidate_id: int
+    question_id: int
+    transcript: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ProctoringData(BaseModel):
     candidate_id: int
     events: List[dict]

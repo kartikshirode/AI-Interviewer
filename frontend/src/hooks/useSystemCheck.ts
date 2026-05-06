@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 
 interface SpeedTestResult {
   download: number;
@@ -21,6 +21,35 @@ interface DeviceInfo {
   deviceType: string;
 }
 
+function detectDeviceFromUA(): DeviceInfo {
+  if (typeof navigator === 'undefined') {
+    return { browser: '', os: '', deviceType: '' };
+  }
+  const ua = navigator.userAgent;
+  let browser = 'Unknown';
+  let os = 'Unknown';
+  let deviceType = 'Desktop';
+
+  if (/Mobi|Android/i.test(ua)) {
+    deviceType = 'Mobile';
+  } else if (/iPad|Tablet/i.test(ua)) {
+    deviceType = 'Tablet';
+  }
+
+  if (ua.includes('Firefox')) browser = 'Firefox';
+  else if (ua.includes('Chrome')) browser = 'Chrome';
+  else if (ua.includes('Safari')) browser = 'Safari';
+  else if (ua.includes('Edge')) browser = 'Edge';
+
+  if (ua.includes('Windows')) os = 'Windows';
+  else if (ua.includes('Mac')) os = 'macOS';
+  else if (ua.includes('Linux')) os = 'Linux';
+  else if (ua.includes('Android')) os = 'Android';
+  else if (ua.includes('iOS')) os = 'iOS';
+
+  return { browser, os, deviceType };
+}
+
 export function useSystemCheck() {
   const [speedTest, setSpeedTest] = useState<SpeedTestResult>({
     download: 0,
@@ -28,48 +57,15 @@ export function useSystemCheck() {
     latency: 0,
     status: 'idle',
   });
-  
+
   const [permissions, setPermissions] = useState<PermissionStatus>({
     camera: 'not-requested',
     microphone: 'not-requested',
     screen: 'not-requested',
   });
-  
-  const [deviceInfo, setDeviceInfo] = useState<DeviceInfo>({
-    browser: '',
-    os: '',
-    deviceType: '',
-  });
 
-  useEffect(() => {
-    detectDevice();
-  }, []);
-
-  const detectDevice = () => {
-    const ua = navigator.userAgent;
-    let browser = 'Unknown';
-    let os = 'Unknown';
-    let deviceType = 'Desktop';
-
-    if (/Mobi|Android/i.test(ua)) {
-      deviceType = 'Mobile';
-    } else if (/iPad|Tablet/i.test(ua)) {
-      deviceType = 'Tablet';
-    }
-
-    if (ua.includes('Firefox')) browser = 'Firefox';
-    else if (ua.includes('Chrome')) browser = 'Chrome';
-    else if (ua.includes('Safari')) browser = 'Safari';
-    else if (ua.includes('Edge')) browser = 'Edge';
-
-    if (ua.includes('Windows')) os = 'Windows';
-    else if (ua.includes('Mac')) os = 'macOS';
-    else if (ua.includes('Linux')) os = 'Linux';
-    else if (ua.includes('Android')) os = 'Android';
-    else if (ua.includes('iOS')) os = 'iOS';
-
-    setDeviceInfo({ browser, os, deviceType });
-  };
+  // Lazy initializer — runs once on the client, no effect-after-render needed.
+  const [deviceInfo] = useState<DeviceInfo>(detectDeviceFromUA);
 
   const requestCamera = useCallback(async () => {
     try {
