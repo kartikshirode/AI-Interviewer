@@ -65,16 +65,9 @@ Create a `backend/.env` file:
 # Gemini API (for AI evaluation - free tier)
 GEMINI_API_KEY=your-gemini-api-key
 
-# LiveKit (for voice interview - free tier)
-# Get free keys at https://livekit.io
-LIVEKIT_URL=wss://your-project.livekit.cloud
-LIVEKIT_API_KEY=your-api-key
-LIVEKIT_API_SECRET=your-api-secret
 ```
-
 Get free keys:
 - Gemini API: https://aistudio.google.com/app/apikey
-- LiveKit: https://livekit.io
 
 ### Step 3: Start Backend
 
