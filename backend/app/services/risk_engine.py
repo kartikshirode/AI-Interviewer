@@ -1,5 +1,5 @@
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 class RiskEngine:
     WEIGHTS = {
@@ -27,7 +27,7 @@ class RiskEngine:
     def add_event(self, event_type: str, timestamp: Optional[int] = None, details: Optional[str] = None):
         self.events.append({
             "type": event_type,
-            "timestamp": timestamp or int(datetime.utcnow().timestamp() * 1000),
+            "timestamp": timestamp or int(datetime.now(timezone.utc).timestamp() * 1000),
             "details": details
         })
 
@@ -97,7 +97,7 @@ class RiskEngine:
             "risk_factors": factors,
             "total_events": len(self.events),
             "recommendation": self._get_recommendation(level),
-            "timestamp": int(datetime.utcnow().timestamp() * 1000)
+            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
         }
 
     def _get_recommendation(self, level: str) -> str:

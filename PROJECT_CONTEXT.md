@@ -31,8 +31,10 @@ React 19 + Tailwind v4 + TypeScript (frontend) | faster-whisper (local STT)
 evaluation | browser Web Speech API for live transcripts and TTS.
 
 **Lifecycle:** pre-launch / active development. Single-developer project.
-Dev DB (`backend/ai_interviewer.db`) is checked in for convenience. There
-is no migration tooling — `init_db()` runs `create_all()` only.
+Dev DB (`backend/ai_interviewer.db`) is gitignored (each dev's local
+SQLite lives only on their machine; `init_db()` recreates the schema on
+first boot). There is no migration tooling — `init_db()` runs
+`create_all()` only.
 
 ---
 
@@ -63,7 +65,7 @@ AI-Interviewer/
 │   │       ├── evaluation_service.py     # Gemini answer scoring with markdown-fence-tolerant JSON parse
 │   │       └── risk_engine.py            # proctoring → cheating-risk score (per-request)
 │   ├── tests/                            # pytest; 34 cases, in-memory SQLite via StaticPool
-│   ├── ai_interviewer.db                 # dev DB (checked in)
+│   ├── ai_interviewer.db                 # dev DB (gitignored — local only)
 │   ├── requirements.txt                  # prod deps
 │   ├── requirements-dev.txt              # pytest, pytest-asyncio, httpx
 │   └── .env                              # SECRET_KEY (mandatory) + GEMINI_API_KEY (gitignored)

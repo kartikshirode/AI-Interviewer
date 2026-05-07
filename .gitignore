@@ -51,6 +51,11 @@ out/
 # Uploads
 # ---------------------------------------------------------------------------
 backend/uploads/
+# Stray leftover from an earlier layout where uvicorn was started from
+# backend/, so `Path("backend/uploads")` resolved as backend/backend/uploads/.
+# The router now anchors uploads relative to the package root, so this
+# directory should never reappear — guarding against regressions.
+backend/backend/
 
 # ---------------------------------------------------------------------------
 # OS
