@@ -315,11 +315,22 @@ async def submit_answer(
     candidate_id: int = Form(...),
     question_id: int = Form(...),
     transcript: Optional[str] = Form(None),
+    # Phase 2.1: epoch-ms when the candidate's mic actually opened. Optional
+    # because older candidate clients won't send it; we trust the client
+    # since this is just a soft signal in the integrity panel.
+    started_at_ms: Optional[int] = Form(None),
+    # Phase 2.1: ms from `started_at_ms` to the first non-empty transcript
+    # token. Constant cadence regardless of difficulty is the highest-
+    # signal "did this come from a tool" tell.
+    first_word_ms: Optional[int] = Form(None),
     audio: Optional[UploadFile] = File(None),
     video: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     candidate: Candidate = Depends(get_current_candidate),
 ):
+    from datetime import datetime, timezone
+    from app.services.transcript_features import extract_features
+
     if candidate.id != candidate_id:
         raise HTTPException(status_code=403, detail="Token/candidate mismatch")
 
@@ -349,6 +360,15 @@ async def submit_answer(
             video, ALLOWED_VIDEO_EXTS, ALLOWED_VIDEO_MIME_PREFIXES
         )
 
+    # Phase 2.1 / 2.3: compute integrity-panel signals up front so they
+    # land on both the new-row and the update-existing paths below.
+    started_at_dt = (
+        datetime.fromtimestamp(started_at_ms / 1000.0, tz=timezone.utc)
+        if started_at_ms is not None
+        else None
+    )
+    features = extract_features(transcript)
+
     existing_answer = (
         db.query(Answer)
         .filter(
@@ -364,6 +384,11 @@ async def submit_answer(
             existing_answer.audio_path = audio_path
         if video_path:
             existing_answer.video_path = video_path
+        if started_at_dt is not None:
+            existing_answer.started_at = started_at_dt
+        if first_word_ms is not None:
+            existing_answer.first_word_ms = first_word_ms
+        existing_answer.transcript_features = features
         db.commit()
         db.refresh(existing_answer)
         if audio_path:
@@ -378,6 +403,9 @@ async def submit_answer(
         transcript=transcript,
         audio_path=audio_path,
         video_path=video_path,
+        started_at=started_at_dt,
+        first_word_ms=first_word_ms,
+        transcript_features=features,
     )
     db.add(answer)
     try:
@@ -401,6 +429,11 @@ async def submit_answer(
             existing_answer.audio_path = audio_path
         if video_path:
             existing_answer.video_path = video_path
+        if started_at_dt is not None:
+            existing_answer.started_at = started_at_dt
+        if first_word_ms is not None:
+            existing_answer.first_word_ms = first_word_ms
+        existing_answer.transcript_features = features
         db.commit()
         db.refresh(existing_answer)
         if audio_path:
@@ -845,6 +878,9 @@ def get_candidate_report(
                 "correctness": answer.correctness,
                 "clarity": answer.clarity,
                 "depth": answer.depth,
+                # Phase 2.1 / 2.3 per-answer integrity signals
+                "first_word_ms": answer.first_word_ms,
+                "transcript_features": answer.transcript_features,
                 "is_flagged": answer.is_flagged,
                 "flag_reason": answer.flag_reason,
             }
@@ -884,7 +920,58 @@ def get_candidate_report(
             )
             .all()
         ]
-    banding = evaluation_service.compute_band(candidate.final_score, cohort_scores)
+    from app.services.evaluation_service import compute_band
+
+    banding = compute_band(candidate.final_score, cohort_scores)
+
+    # Phase 2.5: integrity panel. A pattern-of-evidence block, never a
+    # single "cheat probability" number. The recruiter is the decision
+    # maker; we surface signals.
+    proctoring_counts: dict[str, int] = {}
+    for event_type, cnt in (
+        db.query(ProctoringEvent.event_type, func.count(ProctoringEvent.id))
+        .filter(ProctoringEvent.candidate_id == candidate_id)
+        .group_by(ProctoringEvent.event_type)
+        .all()
+    ):
+        proctoring_counts[event_type] = cnt
+
+    latencies_ms = [a.first_word_ms for a in answers if a.first_word_ms is not None]
+    feature_blobs = [
+        a.transcript_features for a in answers if a.transcript_features
+    ]
+
+    def _mean(xs: list[float]) -> float | None:
+        return round(sum(xs) / len(xs), 2) if xs else None
+
+    def _variance(xs: list[float]) -> float | None:
+        if len(xs) < 2:
+            return None
+        m = sum(xs) / len(xs)
+        return round(sum((x - m) ** 2 for x in xs) / len(xs), 2)
+
+    integrity = {
+        # Each answer's first-word latency, plus per-candidate mean and
+        # population variance. Constant cadence regardless of difficulty
+        # is the highest-signal "tool in the loop" tell.
+        "first_word_ms": {
+            "values": latencies_ms,
+            "mean": _mean([float(x) for x in latencies_ms]),
+            "variance": _variance([float(x) for x in latencies_ms]),
+            "count": len(latencies_ms),
+        },
+        "transcript_features": {
+            "per_answer": feature_blobs,
+            "structural_marker_total": sum(
+                int(f.get("structural_marker_count", 0)) for f in feature_blobs
+            ),
+            "word_count_total": sum(int(f.get("word_count", 0)) for f in feature_blobs),
+        },
+        "proctoring_counts": proctoring_counts,
+        # Kept for back-compat with existing callers; the real signal is
+        # the proctoring counts above and the latency/vocab trends.
+        "cheating_risk": candidate.cheating_risk,
+    }
 
     return {
         "candidate": {
@@ -910,6 +997,7 @@ def get_candidate_report(
             "cheating_risk": candidate.cheating_risk,
         },
         "topic_scores": topic_averages,
+        "integrity": integrity,
         "question_evaluations": question_evaluations,
         "total_questions": len(answers),
         "answered_questions": len([a for a in answers if a.transcript]),

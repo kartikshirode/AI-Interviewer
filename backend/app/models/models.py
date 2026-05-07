@@ -164,6 +164,19 @@ class Answer(Base):
     rubric_score = Column(Float, nullable=True)
     rubric_justification = Column(Text, nullable=True)
     missing_concepts = Column(JSON, nullable=True)
+    # Phase 2.1: response-latency signal. `started_at` is when the
+    # candidate's mic actually opened (TTS finished + recording armed);
+    # `first_word_ms` is the gap to the first non-empty Web Speech result.
+    # Constant cadence regardless of question difficulty is the highest-
+    # signal "did this answer come from a tool" tell — surfaced in the
+    # integrity panel; never used to auto-reject.
+    started_at = Column(DateTime, nullable=True)
+    first_word_ms = Column(Integer, nullable=True)
+    # Phase 2.3: lightweight transcript-derived features. Stored as a
+    # blob so we can extend without migration.
+    #   {"word_count": int, "sentence_length_variance": float,
+    #    "structural_marker_count": int}
+    transcript_features = Column(JSON, nullable=True)
     feedback = Column(Text, nullable=True)
     is_flagged = Column(Boolean, default=False)
     flag_reason = Column(String, nullable=True)

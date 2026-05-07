@@ -341,6 +341,106 @@ export default function InterviewCandidatesPage() {
                 </div>
               )}
 
+              {/* Phase 2.5 — Integrity panel. Pattern-of-evidence, never
+                  a single number. The recruiter is the decision maker;
+                  these are signals, not verdicts. We deliberately do
+                  not surface a "cheat probability" — research on text
+                  AI-detection puts FPR on non-native English writers at
+                  ~61%, and any single-number claim is liability waiting
+                  to happen. */}
+              {report.integrity && (
+                <div className="bg-slate-900/40 border border-slate-700/50 rounded-xl p-4 space-y-4">
+                  <div className="flex items-baseline justify-between">
+                    <h3 className="text-sm font-medium text-slate-300">Integrity signals</h3>
+                    <span className="text-xs text-slate-500 italic">
+                      Soft signals — recruiter judgement required
+                    </span>
+                  </div>
+
+                  <div className="grid sm:grid-cols-2 gap-4 text-sm">
+                    <div className="space-y-1">
+                      <div className="text-xs uppercase tracking-wider text-slate-500">First-word latency</div>
+                      {report.integrity.first_word_ms?.count ? (
+                        <>
+                          <div className="text-slate-200">
+                            mean <span className="font-mono">{report.integrity.first_word_ms.mean ?? '-'} ms</span>
+                            <span className="text-slate-500"> · </span>
+                            variance <span className="font-mono">{report.integrity.first_word_ms.variance ?? '-'}</span>
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            Constant cadence regardless of difficulty is a
+                            tool-in-the-loop tell — but pre-rehearsed answers
+                            also look like that. Read alongside content quality.
+                          </div>
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {(report.integrity.first_word_ms.values as number[]).map((ms, i) => (
+                              <span
+                                key={i}
+                                className="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs font-mono text-slate-300"
+                              >
+                                Q{i + 1}: {ms} ms
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-slate-500 italic">No latency captured (older client?)</div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-xs uppercase tracking-wider text-slate-500">Transcript shape</div>
+                      <div className="text-slate-200">
+                        words <span className="font-mono">{report.integrity.transcript_features?.word_count_total ?? 0}</span>
+                        <span className="text-slate-500"> · </span>
+                        structural markers <span className="font-mono">{report.integrity.transcript_features?.structural_marker_total ?? 0}</span>
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        Heavy &ldquo;firstly / secondly / in conclusion&rdquo;-style
+                        scaffolding in spoken answers can suggest a written
+                        source. Sudden jumps within a single candidate&apos;s
+                        answers are the more interesting signal than absolute
+                        counts.
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-xs uppercase tracking-wider text-slate-500">Proctoring events</div>
+                      {report.integrity.proctoring_counts &&
+                      Object.keys(report.integrity.proctoring_counts).length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(report.integrity.proctoring_counts).map(
+                            ([k, v]: [string, any]) => (
+                              <span
+                                key={k}
+                                className="px-2 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs"
+                              >
+                                <span className="text-slate-400">{k}</span>{' '}
+                                <span className="text-slate-200 font-mono">×{v}</span>
+                              </span>
+                            ),
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-slate-500 italic">None recorded</div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-xs uppercase tracking-wider text-slate-500">Risk-engine level</div>
+                      <div className={`text-sm font-semibold ${getRiskTextColor(report.integrity.cheating_risk)}`}>
+                        {report.integrity.cheating_risk ?? 'unknown'}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        Computed by the in-process RiskEngine from the
+                        proctoring counts above. Coarse heuristic — kept for
+                        back-compat alongside the per-signal panel.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Question Evaluations — Phase 1: rubric-anchored. Each
                   question shows the chosen 0-4 anchor, the one-sentence
                   justification, and any concepts the candidate missed.

@@ -218,6 +218,9 @@ export default function CandidateInterviewPage() {
       clearAutoSubmitTimer();
       voiceInterview.stopSpeaking();
       const transcriptForSubmission = voiceInterview.combinedTranscript.trim();
+      // Phase 2.1: snapshot latency BEFORE stopAnswer so the timing refs
+      // still reflect the answer that just finished.
+      const timing = voiceInterview.getAnswerTiming();
 
       // Stop both recognition + recording, get the audio blob
       const audioBlob = voiceInterview.stopAnswer();
@@ -226,6 +229,12 @@ export default function CandidateInterviewPage() {
       formData.append('candidate_id', candidate.id.toString());
       formData.append('question_id', questions[currentQuestionIndex].id.toString());
       formData.append('transcript', transcriptForSubmission || 'No answer provided');
+      if (timing.started_at_ms != null) {
+        formData.append('started_at_ms', String(timing.started_at_ms));
+      }
+      if (timing.first_word_ms != null) {
+        formData.append('first_word_ms', String(timing.first_word_ms));
+      }
 
       // Attach recorded audio for backend Whisper processing
       if (audioBlob && audioBlob.size > 0) {

@@ -71,6 +71,15 @@ export function useVoiceInterview() {
   const audioChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
 
+  // ── Phase 2.1: response-latency timing ──
+  // `startedAtRef` = epoch-ms when the candidate's mic actually opened
+  // (after TTS finishes and recording is armed). `firstWordMsRef` =
+  // gap to the first non-empty Web Speech result. Both reset every
+  // question via `startAnswer`. Surfaced to the recruiter integrity
+  // panel; soft signal only.
+  const startedAtRef = useRef<number | null>(null);
+  const firstWordMsRef = useRef<number | null>(null);
+
   // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
@@ -175,7 +184,12 @@ export function useVoiceInterview() {
       setCombinedTranscript(merged);
 
       if (merged.length > 0) {
-        setLastSpeechAt(Date.now());
+        const now = Date.now();
+        setLastSpeechAt(now);
+        // Phase 2.1: capture first-word latency exactly once per answer.
+        if (firstWordMsRef.current == null && startedAtRef.current != null) {
+          firstWordMsRef.current = now - startedAtRef.current;
+        }
       }
     };
 
@@ -274,6 +288,11 @@ export function useVoiceInterview() {
   //  COMBINED START / STOP  (recognition + recording)
   // ────────────────────────────────────────────────
   const startAnswer = useCallback(async () => {
+    // Phase 2.1: reset latency timing per answer. The candidate's mic
+    // is considered "open" once recording is armed AND recognition has
+    // been started — both happen here.
+    firstWordMsRef.current = null;
+    startedAtRef.current = Date.now();
     await startRecording();
     startListening();
   }, [startRecording, startListening]);
@@ -282,6 +301,19 @@ export function useVoiceInterview() {
     stopListening();
     return stopRecording();
   }, [stopListening, stopRecording]);
+
+  /** Phase 2.1: snapshot the latency timing for this answer so the
+   * caller can include it in the submit FormData. Returns `started_at_ms`
+   * = epoch-ms the mic opened (null if startAnswer was never called),
+   * `first_word_ms` = ms gap to first transcript token (null if the
+   * candidate never spoke). Both are soft signals — the recruiter UI
+   * surfaces them but never auto-rejects. */
+  const getAnswerTiming = useCallback(() => {
+    return {
+      started_at_ms: startedAtRef.current,
+      first_word_ms: firstWordMsRef.current,
+    };
+  }, []);
 
   // ────────────────────────────────────────────────
   //  HELPERS
@@ -322,6 +354,7 @@ export function useVoiceInterview() {
     // Combined
     startAnswer,
     stopAnswer,
+    getAnswerTiming,
     // Helpers
     stopSpeaking,
     resetTranscript,
