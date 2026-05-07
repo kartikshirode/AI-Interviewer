@@ -4,6 +4,31 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
 export const API_BASE = API_BASE_URL;
 
+// FastAPI returns `detail` as a string for HTTPException, but as an array of
+// {loc, msg, type} objects on Pydantic validation failures (422). Render both
+// shapes as a readable string so callers don't show "[object Object]".
+function formatApiError(body: unknown, status: number): string {
+  if (body && typeof body === 'object' && 'detail' in body) {
+    const detail = (body as { detail: unknown }).detail;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((item) => {
+          if (item && typeof item === 'object' && 'msg' in item) {
+            const msg = (item as { msg?: unknown }).msg;
+            const loc = (item as { loc?: unknown }).loc;
+            const field = Array.isArray(loc) ? loc.filter((p) => p !== 'body').join('.') : '';
+            return field ? `${field}: ${msg}` : String(msg);
+          }
+          return JSON.stringify(item);
+        })
+        .join('; ');
+    }
+    if (detail) return JSON.stringify(detail);
+  }
+  return `Request failed with status ${status}`;
+}
+
 class ApiService {
   private token: string | null = null;
   private candidateToken: string | null = null;
@@ -83,7 +108,7 @@ class ApiService {
         detail: `HTTP ${response.status}: ${response.statusText}`,
       }));
       throw new Error(
-        errorBody.detail || `Request failed with status ${response.status}`,
+        formatApiError(errorBody, response.status),
       );
     }
 
