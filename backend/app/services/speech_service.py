@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import os
 import tempfile
 import threading
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class SpeechToTextService:
@@ -29,16 +32,19 @@ class SpeechToTextService:
         return self._model
 
     def transcribe_audio(self, audio_path: str) -> str:
-        """Transcribe audio file using faster-whisper (local, free)."""
-        try:
-            with self._semaphore:
-                model = self._get_model()
-                segments, _info = model.transcribe(audio_path, beam_size=5)
-                result = " ".join(segment.text for segment in segments)
-                return result.strip()
-        except Exception as e:
-            print(f"Error transcribing audio: {e}")
-            return ""
+        """Transcribe audio file using faster-whisper (local, free).
+
+        Phase 0.5: exceptions are propagated to the caller — the
+        background-task handler in `candidate.py` catches them and
+        marks the answer's `flag_reason = "transcription_failed"`.
+        Previously this method swallowed every exception and returned
+        an empty string, which the caller misclassified as "silence".
+        """
+        with self._semaphore:
+            model = self._get_model()
+            segments, _info = model.transcribe(audio_path, beam_size=5)
+            result = " ".join(segment.text for segment in segments)
+            return result.strip()
 
     async def transcribe_audio_async(self, audio_path: str) -> str:
         """Async wrapper that offloads inference to a worker thread."""
@@ -47,7 +53,12 @@ class SpeechToTextService:
     def transcribe_video(
         self, video_path: str, temp_audio_path: Optional[str] = None
     ) -> str:
-        """Extract audio from video and transcribe."""
+        """Extract audio from video and transcribe.
+
+        Phase 0.5: exceptions propagate. We still own the cleanup of the
+        VideoFileClip and the temp audio file via try/finally — the only
+        thing that changed is we no longer swallow the exception itself.
+        """
         try:
             from moviepy.editor import VideoFileClip
         except ImportError:
@@ -57,20 +68,13 @@ class SpeechToTextService:
         owns_temp = temp_audio_path is None
         try:
             if owns_temp:
-                # NamedTemporaryFile with delete=False so the path is reusable
-                # by moviepy/whisper; we remove it ourselves below.
                 tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
                 tmp.close()
                 temp_audio_path = tmp.name
 
             video = VideoFileClip(video_path)
             video.audio.write_audiofile(temp_audio_path, verbose=False, logger=None)
-
-            transcript = self.transcribe_audio(temp_audio_path)
-            return transcript
-        except Exception as e:
-            print(f"Error processing video: {e}")
-            return ""
+            return self.transcribe_audio(temp_audio_path)
         finally:
             if video is not None:
                 try:
@@ -85,18 +89,15 @@ class SpeechToTextService:
                     pass
 
     def transcribe_from_blob(self, audio_blob: bytes, filename: str = "audio.webm") -> str:
-        """Transcribe audio from blob in memory."""
+        """Transcribe audio from blob in memory. Phase 0.5: exceptions
+        propagate; caller must handle. Temp file cleanup still runs."""
         suffix = ".webm" if "webm" in filename else ".mp3"
         tmp_path: Optional[str] = None
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(audio_blob)
                 tmp_path = tmp.name
-
             return self.transcribe_audio(tmp_path)
-        except Exception as e:
-            print(f"Error transcribing blob: {e}")
-            return ""
         finally:
             if tmp_path:
                 try:
