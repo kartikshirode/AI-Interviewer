@@ -619,6 +619,8 @@ def get_interview_candidates(
     db: Session = Depends(get_db),
     recruiter: Recruiter = Depends(get_current_recruiter),
 ):
+    from app.services.evaluation_service import compute_band
+
     interview = (
         db.query(Interview)
         .filter(Interview.id == interview_id, Interview.recruiter_id == recruiter.id)
@@ -627,4 +629,30 @@ def get_interview_candidates(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    return db.query(Candidate).filter(Candidate.interview_id == interview_id).all()
+    candidates = (
+        db.query(Candidate).filter(Candidate.interview_id == interview_id).all()
+    )
+
+    # Phase 0.3: cohort = all scored candidates across every interview with
+    # this same (role, difficulty), so a freshly-launched interview already
+    # gets a defensible percentile placement against history.
+    cohort_scores: List[float] = [
+        row[0]
+        for row in db.query(Candidate.final_score)
+        .join(Interview, Candidate.interview_id == Interview.id)
+        .filter(
+            Interview.role == interview.role,
+            Interview.difficulty == interview.difficulty,
+            Candidate.final_score.isnot(None),
+        )
+        .all()
+    ]
+
+    rows: List[CandidateSummary] = []
+    for c in candidates:
+        banding = compute_band(c.final_score, cohort_scores)
+        item = CandidateSummary.model_validate(c)
+        item.band = banding["band"]
+        item.cohort_size = banding["cohort_size"]
+        rows.append(item)
+    return rows

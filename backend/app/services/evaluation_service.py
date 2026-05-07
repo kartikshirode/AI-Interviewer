@@ -9,6 +9,50 @@ import google.generativeai as genai
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
 
 
+# Phase 0.3: percentile-band thresholds. Anything in the top 30% of a
+# (role, difficulty) cohort lands in `top_30`; the bottom 30% in
+# `bottom_30`; the rest in `middle`. Below `MIN_COHORT_SIZE` we don't
+# emit a band at all — the percentile would be too noisy to defend.
+TOP_THRESHOLD = 0.70
+BOTTOM_THRESHOLD = 0.30
+MIN_COHORT_SIZE = 10
+
+
+def compute_band(candidate_score: Optional[float], cohort_scores: list[float]) -> Dict[str, Any]:
+    """Place `candidate_score` into a percentile band against `cohort_scores`.
+
+    `cohort_scores` should already include the candidate's own score —
+    we use a rank-based percentile (`below + 0.5 * equal) / n`) so a
+    single-element cohort containing only the candidate himself lands at
+    50% rather than 0% or 100%. Both the band and the cohort size are
+    returned so the recruiter UI can disclose how many candidates the
+    band is computed against.
+
+    Returns:
+      `{band: "top_30" | "middle" | "bottom_30" | "insufficient_data",
+        cohort_size: int, percentile: float | None}`
+    """
+    if candidate_score is None:
+        return {"band": "insufficient_data", "cohort_size": 0, "percentile": None}
+
+    n = len(cohort_scores)
+    if n < MIN_COHORT_SIZE:
+        return {"band": "insufficient_data", "cohort_size": n, "percentile": None}
+
+    below = sum(1 for s in cohort_scores if s < candidate_score)
+    equal = sum(1 for s in cohort_scores if s == candidate_score)
+    percentile = (below + 0.5 * equal) / n
+
+    if percentile >= TOP_THRESHOLD:
+        band = "top_30"
+    elif percentile <= BOTTOM_THRESHOLD:
+        band = "bottom_30"
+    else:
+        band = "middle"
+
+    return {"band": band, "cohort_size": n, "percentile": round(percentile, 3)}
+
+
 def _extract_json(text: str) -> Optional[dict]:
     """Gemini sometimes wraps JSON in ```json ... ``` fences. Strip them and
     parse. Returns None on failure."""

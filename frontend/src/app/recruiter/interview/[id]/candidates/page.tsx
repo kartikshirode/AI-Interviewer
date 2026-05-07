@@ -5,6 +5,8 @@ import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { api } from '@/services/api';
 
+type Band = 'top_30' | 'middle' | 'bottom_30' | 'insufficient_data';
+
 interface Candidate {
   id: number;
   name: string;
@@ -13,6 +15,8 @@ interface Candidate {
   final_score: number | null;
   communication_score: number | null;
   cheating_risk: string;
+  band?: Band | null;
+  cohort_size?: number | null;
 }
 
 interface Interview {
@@ -102,6 +106,36 @@ export default function InterviewCandidatesPage() {
     }
   };
 
+  // Phase 0.3: render percentile bands as the headline; raw scores are
+  // not the primary signal a recruiter should anchor on.
+  const renderBand = (band?: Band | null, cohortSize?: number | null) => {
+    const cohortNote = cohortSize != null ? `n=${cohortSize}` : '';
+    if (!band || band === 'insufficient_data') {
+      return (
+        <span className="px-3 py-1 rounded-full text-xs font-medium bg-slate-700/50 text-slate-400 border border-slate-600/40">
+          Insufficient data {cohortNote}
+        </span>
+      );
+    }
+    const styles: Record<Band, string> = {
+      top_30: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+      middle: 'bg-slate-500/20 text-slate-300 border-slate-500/40',
+      bottom_30: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+      insufficient_data: 'bg-slate-700/50 text-slate-400 border-slate-600/40',
+    };
+    const labels: Record<Band, string> = {
+      top_30: 'Top 30%',
+      middle: 'Middle',
+      bottom_30: 'Bottom 30%',
+      insufficient_data: 'Insufficient data',
+    };
+    return (
+      <span className={`px-3 py-1 rounded-full text-xs font-medium border ${styles[band]}`}>
+        {labels[band]} {cohortNote && <span className="ml-1 opacity-60">({cohortNote})</span>}
+      </span>
+    );
+  };
+
   // Plain text color for places where the chip background would clash with
   // the surrounding card (e.g. the big number on the score card).
   const getRiskTextColor = (risk: string) => {
@@ -179,7 +213,7 @@ export default function InterviewCandidatesPage() {
                     <th className="px-6 py-4 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Name</th>
                     <th className="px-6 py-4 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Email</th>
                     <th className="px-6 py-4 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Score</th>
+                    <th className="px-6 py-4 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Band</th>
                     <th className="px-6 py-4 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Risk</th>
                     <th className="px-6 py-4 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">Actions</th>
                   </tr>
@@ -197,9 +231,7 @@ export default function InterviewCandidatesPage() {
                         </span>
                       </td>
                       <td className="px-6 py-4">
-                        <span className="text-white font-bold text-lg">
-                          {candidate.final_score ? candidate.final_score.toFixed(1) : '-'}
-                        </span>
+                        {renderBand(candidate.band, candidate.cohort_size)}
                       </td>
                       <td className="px-6 py-4">
                         <span className={`px-3 py-1 rounded-full text-xs font-medium ${getRiskColor(candidate.cheating_risk)}`}>
@@ -263,20 +295,34 @@ export default function InterviewCandidatesPage() {
             </div>
 
             <div className="p-6 space-y-6">
-              {/* Score Cards */}
-              <div className="grid grid-cols-3 gap-4">
-                <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 text-center">
-                  <p className="text-sm text-slate-400 mb-1">Final Score</p>
-                  <p className="text-3xl font-bold text-blue-400">{report.scores.final_score?.toFixed(1) || '-'}</p>
+              {/* Headline: percentile band against the (role, difficulty) cohort.
+                  Raw scores are intentionally NOT the headline — they're available
+                  in the per-question breakdown below for debugging only. */}
+              <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-6 text-center space-y-2">
+                <p className="text-sm text-slate-400">Cohort placement</p>
+                <div className="flex justify-center">
+                  {renderBand(report.band?.band, report.band?.cohort_size)}
                 </div>
+                {report.band?.band === 'insufficient_data' && (
+                  <p className="text-xs text-slate-500">
+                    Need at least 10 scored candidates with this role and difficulty
+                    before a band can be computed. {report.band?.cohort_size ?? 0} so far.
+                  </p>
+                )}
+              </div>
+
+              {/* Secondary signals — these are intentionally not the headline. */}
+              <div className="grid grid-cols-2 gap-4">
                 <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 text-center">
-                  <p className="text-sm text-slate-400 mb-1">Communication</p>
-                  <p className="text-3xl font-bold text-green-400">{report.scores.communication_score?.toFixed(1) || '-'}</p>
-                </div>
-                <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 text-center">
-                  <p className="text-sm text-slate-400 mb-1">Cheating Risk</p>
-                  <p className={`text-3xl font-bold ${getRiskTextColor(report.scores.cheating_risk)}`}>
+                  <p className="text-sm text-slate-400 mb-1">Cheating risk (informational)</p>
+                  <p className={`text-2xl font-semibold ${getRiskTextColor(report.scores.cheating_risk)}`}>
                     {report.scores.cheating_risk}
+                  </p>
+                </div>
+                <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 text-center">
+                  <p className="text-sm text-slate-400 mb-1">Questions answered</p>
+                  <p className="text-2xl font-semibold text-slate-200">
+                    {report.answered_questions ?? 0} / {report.total_questions ?? 0}
                   </p>
                 </div>
               </div>

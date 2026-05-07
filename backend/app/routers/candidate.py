@@ -840,6 +840,25 @@ def get_candidate_report(
     aggregated = evaluation_service.calculate_final_score(answer_eval_dicts)
     technical_score = aggregated["technical_score"] if aggregated else None
 
+    # Phase 0.3: percentile band against the (role, difficulty) cohort.
+    # The cohort intentionally includes this candidate so a single-row
+    # cohort still produces a defensible 50%-percentile placement (which
+    # then maps to `insufficient_data` because n < 10).
+    cohort_scores: list[float] = []
+    if interview is not None:
+        cohort_scores = [
+            row[0]
+            for row in db.query(Candidate.final_score)
+            .join(Interview, Candidate.interview_id == Interview.id)
+            .filter(
+                Interview.role == interview.role,
+                Interview.difficulty == interview.difficulty,
+                Candidate.final_score.isnot(None),
+            )
+            .all()
+        ]
+    banding = evaluation_service.compute_band(candidate.final_score, cohort_scores)
+
     return {
         "candidate": {
             "id": candidate.id,
@@ -853,6 +872,10 @@ def get_candidate_report(
             "difficulty": interview.difficulty if interview else "",
             "status": interview.status if interview else "",
         },
+        # `band` is the headline the recruiter UI must show. Raw scores are
+        # retained for debugging and for the per-question breakdown but
+        # should not be the headline number.
+        "band": banding,
         "scores": {
             "final_score": candidate.final_score,
             "technical_score": technical_score,

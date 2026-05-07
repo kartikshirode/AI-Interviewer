@@ -126,6 +126,13 @@ class CandidateSummary(BaseModel):
     final_score: Optional[float] = None
     communication_score: Optional[float] = None
     cheating_risk: str
+    # Phase 0.3: percentile band against the (role, difficulty) cohort.
+    # `None` until the cohort reaches MIN_COHORT_SIZE, at which point the
+    # endpoint fills it in. Recruiter UI should render `band` as the
+    # headline; raw scores are kept for the debugger but should not be
+    # the primary visual.
+    band: Optional[str] = None
+    cohort_size: Optional[int] = None
 
     class Config:
         from_attributes = True
