@@ -32,7 +32,10 @@ interface Candidate {
 }
 
 type InterviewState = 'loading' | 'not-found' | 'register' | 'system-check' | 'voice-verify' | 'ready' | 'interview' | 'completed';
-const AUTO_SUBMIT_SILENCE_MS = 6000;
+// Phase 0.4: 6 seconds was cutting candidates off mid-thought, especially
+// when they paused to think. The Submit-answer button below is the primary
+// path; auto-submit is a fallback for candidates who don't notice it.
+const AUTO_SUBMIT_SILENCE_MS = 12000;
 
 export default function CandidateInterviewPage() {
   const params = useParams();
@@ -779,7 +782,7 @@ export default function CandidateInterviewPage() {
 
               {voiceInterview.isListening && voiceInterview.combinedTranscript && (
                 <div className="mt-3 text-xs text-slate-400">
-                  Answer auto-submits after 6 seconds of silence.
+                  Press <span className="text-slate-200 font-medium">Submit answer</span> below when you&apos;re done — or just stay silent for 12 seconds and we&apos;ll move on.
                 </div>
               )}
 
@@ -794,11 +797,16 @@ export default function CandidateInterviewPage() {
               <button
                 onClick={submitAnswer}
                 disabled={submitting}
+                aria-label="Submit answer"
                 className={`px-8 py-4 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 rounded-xl font-semibold text-lg transition-all transform hover:scale-105 shadow-lg shadow-cyan-500/25 ${
                   submitting ? 'opacity-50 cursor-not-allowed' : ''
                 }`}
               >
-                {submitting ? 'Submitting...' : currentQuestionIndex < questions.length - 1 ? 'Next Question →' : 'Finish Interview'}
+                {submitting
+                  ? 'Submitting...'
+                  : currentQuestionIndex < questions.length - 1
+                    ? 'Submit answer → next question'
+                    : 'Submit answer & finish'}
               </button>
             </div>
           </div>
