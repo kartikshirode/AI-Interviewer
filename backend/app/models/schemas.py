@@ -100,7 +100,12 @@ class CandidateBase(BaseModel):
 
 
 class CandidateCreate(CandidateBase):
-    pass
+    # Phase 2.2: explicit consent for voice biometric processing. Only
+    # *required* when ENABLE_SPEAKER_VERIFICATION is on; older clients
+    # that don't send this field still register fine when the feature
+    # is off. The registration endpoint enforces the True value when
+    # the flag is on; we capture the timestamp on Candidate.voice_consent_at.
+    voice_consent: Optional[bool] = None
 
 
 class CandidateResponse(CandidateBase):

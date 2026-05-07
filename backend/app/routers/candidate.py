@@ -16,7 +16,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,12 @@ def get_interview_by_link(interview_link: str, db: Session = Depends(get_db)):
         "difficulty": interview.difficulty,
         "num_questions": interview.num_questions,
         "status": interview.status,
+        # Phase 2.2: tell the candidate's browser whether the operator
+        # has enabled voice biometrics so the registration form can show
+        # the consent checkbox conditionally. The backend still enforces
+        # consent on registration when the flag is on — this is just UX.
+        "requires_voice_consent": settings.ENABLE_SPEAKER_VERIFICATION,
+        "voice_data_retention_days": settings.SPEAKER_DATA_RETENTION_DAYS,
     }
 
 
@@ -167,9 +173,29 @@ def get_interview_by_link(interview_link: str, db: Session = Depends(get_db)):
 def register_candidate(
     interview_id: int, candidate: CandidateCreate, db: Session = Depends(get_db)
 ):
+    from datetime import datetime, timezone
+
     interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Phase 2.2: when speaker verification is on, registration must
+    # carry an explicit `voice_consent: true` — voice biometrics need
+    # informed consent. We record the consent timestamp; absence of
+    # consent (or consent=false) refuses the registration with 400.
+    voice_consent_at = None
+    if settings.ENABLE_SPEAKER_VERIFICATION:
+        if not candidate.voice_consent:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Voice analysis consent is required to take this "
+                    "interview. Your voice will be analyzed for identity "
+                    "verification and the embedding deleted after "
+                    f"{settings.SPEAKER_DATA_RETENTION_DAYS} days."
+                ),
+            )
+        voice_consent_at = datetime.now(timezone.utc)
 
     # Re-use existing candidate row for the same (interview, email) so retrying
     # registration doesn't break the unique constraint.
@@ -184,6 +210,8 @@ def register_candidate(
     if db_candidate:
         # Update name in case the candidate corrected a typo.
         db_candidate.name = candidate.name
+        if voice_consent_at is not None and db_candidate.voice_consent_at is None:
+            db_candidate.voice_consent_at = voice_consent_at
         db.commit()
         db.refresh(db_candidate)
     else:
@@ -192,6 +220,7 @@ def register_candidate(
             name=candidate.name,
             email=candidate.email,
             status="registered",
+            voice_consent_at=voice_consent_at,
         )
         db.add(db_candidate)
         try:
@@ -399,6 +428,30 @@ def _transcribe_audio_background(answer_id: int, audio_path: str):
             # Whisper returned empty — likely silence or unreadable audio.
             answer.flag_reason = "transcription_empty"
         db.commit()
+
+        # Phase 2.2: voice embedding extraction. Off by default; only
+        # runs when the operator opted in AND the candidate consented.
+        # Soft-fails on every error path so this is never load-bearing.
+        try:
+            from app.core.config import settings as _vk_settings
+
+            if _vk_settings.ENABLE_SPEAKER_VERIFICATION:
+                cand_check = (
+                    db.query(Candidate)
+                    .filter(Candidate.id == answer.candidate_id)
+                    .first()
+                )
+                if cand_check is not None and cand_check.voice_consent_at is not None:
+                    from app.services import speaker_verification
+
+                    embedding = speaker_verification.extract_embedding(audio_path)
+                    if embedding is not None:
+                        answer.voice_embedding = embedding
+                        db.commit()
+        except Exception:
+            logger.exception(
+                "Speaker embedding extraction failed for answer %s", answer_id
+            )
 
         # Phase 2.4 auto-eval + follow-up. Behind the feature flag so
         # the existing recruiter-triggered evaluation path stays the
@@ -1109,6 +1162,37 @@ def get_candidate_report(
         m = sum(xs) / len(xs)
         return round(sum((x - m) ** 2 for x in xs) / len(xs), 2)
 
+    # Phase 2.2: speaker-verification block. We compare every embedded
+    # answer against the FIRST embedded answer's vector; the first
+    # answer is the reference, so its distance is 0 by definition.
+    # `flagged` = max distance > settings threshold; surfaced as a
+    # signal, never as an auto-reject.
+    from app.services.speaker_verification import cosine_distance
+
+    embedded_answers = [a for a in answers if a.voice_embedding]
+    speaker_block: dict[str, Any] = {
+        "enabled": settings.ENABLE_SPEAKER_VERIFICATION,
+        "consent_recorded": candidate.voice_consent_at is not None,
+        "answer_count": len(embedded_answers),
+    }
+    if len(embedded_answers) >= 2:
+        reference = embedded_answers[0].voice_embedding
+        distances: list[float] = []
+        for a in embedded_answers[1:]:
+            d = cosine_distance(reference, a.voice_embedding)
+            if d is not None:
+                distances.append(d)
+        if distances:
+            max_d = max(distances)
+            speaker_block.update(
+                {
+                    "mean_distance": round(sum(distances) / len(distances), 4),
+                    "max_distance": round(max_d, 4),
+                    "flagged": max_d > settings.SPEAKER_VERIFICATION_FLAG_DISTANCE,
+                    "threshold": settings.SPEAKER_VERIFICATION_FLAG_DISTANCE,
+                }
+            )
+
     integrity = {
         # Each answer's first-word latency, plus per-candidate mean and
         # population variance. Constant cadence regardless of difficulty
@@ -1126,6 +1210,7 @@ def get_candidate_report(
             ),
             "word_count_total": sum(int(f.get("word_count", 0)) for f in feature_blobs),
         },
+        "speaker_verification": speaker_block,
         "proctoring_counts": proctoring_counts,
         # Kept for back-compat with existing callers; the real signal is
         # the proctoring counts above and the latency/vocab trends.

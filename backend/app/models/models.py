@@ -132,6 +132,13 @@ class Candidate(Base):
     final_score = Column(Float, nullable=True)
     communication_score = Column(Float, nullable=True)
     cheating_risk = Column(String, default="low")
+    # Phase 2.2: explicit consent timestamp for voice biometric
+    # processing. When ENABLE_SPEAKER_VERIFICATION is on, registration
+    # refuses to proceed without a True checkbox; this column records
+    # *when* the consent was given. NULL means the candidate either
+    # registered before the feature existed, or the feature is off, or
+    # consent was withheld (in which case we never created the row).
+    voice_consent_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
 
     interview = relationship("Interview", back_populates="candidates")
@@ -188,6 +195,12 @@ class Answer(Base):
     #   {"word_count": int, "sentence_length_variance": float,
     #    "structural_marker_count": int}
     transcript_features = Column(JSON, nullable=True)
+    # Phase 2.2: speaker embedding (list[float], length depends on the
+    # encoder — ECAPA-TDNN gives 192 dims). Stored as JSON for
+    # cross-database simplicity. Populated only when the candidate
+    # consented and ENABLE_SPEAKER_VERIFICATION is on. Erased after
+    # SPEAKER_DATA_RETENTION_DAYS by the cleanup task.
+    voice_embedding = Column(JSON, nullable=True)
     feedback = Column(Text, nullable=True)
     is_flagged = Column(Boolean, default=False)
     flag_reason = Column(String, nullable=True)

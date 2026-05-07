@@ -257,12 +257,23 @@ class ApiService {
     return this.request(`/candidate/interview/${interviewLink}`);
   }
 
-  async registerCandidate(interviewId: number, name: string, email: string) {
+  async registerCandidate(
+    interviewId: number,
+    name: string,
+    email: string,
+    options: { voiceConsent?: boolean } = {},
+  ) {
+    const body: Record<string, unknown> = { name, email };
+    // Phase 2.2: only include the field if the caller passed it; older
+    // backends without the column will still accept the request.
+    if (options.voiceConsent !== undefined) {
+      body.voice_consent = options.voiceConsent;
+    }
     const result = await this.request<{ session_token: string; id: number; interview_id: number; status: string; final_score: number | null; communication_score: number | null; cheating_risk: string; name: string; email: string }>(
       `/candidate/interview/${interviewId}/register`,
       {
         method: 'POST',
-        body: JSON.stringify({ name, email }),
+        body: JSON.stringify(body),
       },
     );
     if (result?.session_token) {

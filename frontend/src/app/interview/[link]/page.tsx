@@ -15,6 +15,10 @@ interface Interview {
   difficulty: string;
   num_questions: number;
   status: string;
+  // Phase 2.2: when true, the candidate must opt in to voice
+  // biometrics before the registration submit succeeds.
+  requires_voice_consent?: boolean;
+  voice_data_retention_days?: number;
 }
 
 interface Question {
@@ -53,6 +57,10 @@ export default function CandidateInterviewPage() {
   
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  // Phase 2.2: voice-biometrics consent. Only required when the
+  // backend has ENABLE_SPEAKER_VERIFICATION on, which we discover via
+  // the interview-by-link response (`requires_voice_consent`).
+  const [voiceConsent, setVoiceConsent] = useState(false);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -121,12 +129,20 @@ export default function CandidateInterviewPage() {
     e.preventDefault();
     if (!interview) return;
 
+    if (interview.requires_voice_consent && !voiceConsent) {
+      alert('Voice analysis consent is required to take this interview.');
+      return;
+    }
+
     try {
-      const newCandidate = await api.registerCandidate(interview.id, name, email);
+      const newCandidate = await api.registerCandidate(interview.id, name, email, {
+        voiceConsent: interview.requires_voice_consent ? voiceConsent : undefined,
+      });
       setCandidate(newCandidate as Candidate);
       setState('system-check');
-    } catch (err) {
-      alert('Registration failed. Please try again.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Registration failed. Please try again.';
+      alert(msg);
     }
   };
 
@@ -406,6 +422,29 @@ export default function CandidateInterviewPage() {
                   required
                 />
               </div>
+              {/* Phase 2.2: voice-biometrics consent. Only shown when
+                  the operator has enabled the feature for this
+                  deployment. The backend enforces consent server-side
+                  too — this is the user-facing disclosure. */}
+              {interview.requires_voice_consent && (
+                <label className="flex items-start gap-3 p-3 bg-slate-900/40 border border-slate-700 rounded-xl cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={voiceConsent}
+                    onChange={(e) => setVoiceConsent(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                  />
+                  <span className="text-sm text-slate-300">
+                    I consent to voice analysis for identity verification
+                    during this interview. My voice data will be retained for
+                    {' '}
+                    <span className="font-medium">
+                      {interview.voice_data_retention_days ?? 30} days
+                    </span>{' '}
+                    after the recruiter&apos;s decision and then deleted.
+                  </span>
+                </label>
+              )}
               <button
                 type="submit"
                 className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 font-semibold rounded-xl transition-all transform hover:scale-[1.02]"

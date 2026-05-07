@@ -437,6 +437,59 @@ export default function InterviewCandidatesPage() {
                         back-compat alongside the per-signal panel.
                       </div>
                     </div>
+
+                    {/* Phase 2.2: speaker verification. Only shown when
+                        the operator has enabled the feature; otherwise
+                        the panel reads "off" and we don't surface
+                        comparison numbers we don't have. */}
+                    {report.integrity.speaker_verification && (
+                      <div className="space-y-1 sm:col-span-2">
+                        <div className="text-xs uppercase tracking-wider text-slate-500">
+                          Speaker verification
+                        </div>
+                        {!report.integrity.speaker_verification.enabled ? (
+                          <div className="text-slate-500 italic text-xs">Disabled by operator.</div>
+                        ) : !report.integrity.speaker_verification.consent_recorded ? (
+                          <div className="text-slate-500 italic text-xs">
+                            Candidate did not consent to voice analysis (or registered before consent was required).
+                          </div>
+                        ) : report.integrity.speaker_verification.answer_count < 2 ? (
+                          <div className="text-slate-500 italic text-xs">
+                            Only {report.integrity.speaker_verification.answer_count} answer(s) embedded — need at least two for a comparison.
+                          </div>
+                        ) : (
+                          <>
+                            <div className="text-slate-200">
+                              max distance{' '}
+                              <span className="font-mono">
+                                {report.integrity.speaker_verification.max_distance}
+                              </span>
+                              <span className="text-slate-500"> · </span>
+                              mean{' '}
+                              <span className="font-mono">
+                                {report.integrity.speaker_verification.mean_distance}
+                              </span>
+                              <span className="text-slate-500"> · </span>
+                              threshold{' '}
+                              <span className="font-mono">
+                                {report.integrity.speaker_verification.threshold}
+                              </span>
+                            </div>
+                            <div
+                              className={`text-xs ${
+                                report.integrity.speaker_verification.flagged
+                                  ? 'text-amber-300'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {report.integrity.speaker_verification.flagged
+                                ? 'Flagged: a later answer’s voice differs from the first answer’s by more than the threshold. Possible proxy interview — review the recordings.'
+                                : 'Within threshold — voices appear consistent across answers.'}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

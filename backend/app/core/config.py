@@ -40,6 +40,20 @@ class Settings(BaseSettings):
     FOLLOWUP_THRESHOLD: float = 3.0
     MAX_FOLLOWUPS_PER_INTERVIEW: int = 3
 
+    # Phase 2.2: speaker verification across answers. Catches the
+    # proxy-interview case (someone else takes the interview). Off by
+    # default — `speechbrain` is intentionally NOT in
+    # requirements.txt because it pulls torch + torchaudio (~2-3 GB).
+    # Operators who want this feature install:
+    #   pip install speechbrain torch torchaudio
+    # and flip the flag. The service degrades gracefully without it.
+    # Privacy: registration refuses to proceed without explicit
+    # candidate consent when this flag is on; the embedding is wiped
+    # from old Answer rows after `SPEAKER_DATA_RETENTION_DAYS` days.
+    ENABLE_SPEAKER_VERIFICATION: bool = False
+    SPEAKER_VERIFICATION_FLAG_DISTANCE: float = 0.3
+    SPEAKER_DATA_RETENTION_DAYS: int = 30
+
     @field_validator("SECRET_KEY")
     @classmethod
     def _validate_secret_key(cls, v: str) -> str:
