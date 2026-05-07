@@ -156,6 +156,42 @@ class Answer(Base):
     )
 
 
+class ProctoringEvent(Base):
+    """Per-candidate proctoring signals collected by the browser hook
+    (`useProctoring`) during the interview.
+
+    Each row is a single discrete event — tab switch, focus loss, clipboard
+    interaction, etc. The candidate's frontend batches events and POSTs
+    them to `/candidate/{candidate_id}/proctoring`. The recruiter's report
+    reads from this table to compute counts per `event_type` and feed the
+    `RiskEngine` for the cheating-risk level.
+
+    `event_type` is intentionally a free-form string, not an enum, so the
+    hook can extend the vocabulary (e.g. new keyboard shortcuts) without
+    requiring a schema migration. The current vocabulary is documented in
+    `useProctoring.ts` and `RiskEngine.WEIGHTS`.
+    """
+
+    __tablename__ = "proctoring_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    candidate_id = Column(
+        Integer,
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type = Column(String(50), nullable=False)
+    timestamp = Column(DateTime, nullable=False, default=_utcnow)
+    # Optional per-event metadata (e.g. URL of opened tab, key name).
+    # Kept as JSON so we don't have to migrate when a new field shows up.
+    details = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("ix_proctoring_events_candidate_type", "candidate_id", "event_type"),
+    )
+
+
 class QuestionBank(Base):
     """Persistent, reusable question pool keyed by (topic, difficulty, skills).
 

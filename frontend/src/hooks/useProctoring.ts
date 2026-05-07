@@ -1,6 +1,10 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { api } from '@/services/api';
+
+const FLUSH_BATCH_SIZE = 10;
+const FLUSH_INTERVAL_MS = 30_000;
 
 interface ProctoringEvent {
   type: string;
@@ -43,10 +47,43 @@ export function useProctoring(videoRef: React.RefObject<HTMLVideoElement | null>
   const multipleFaceRef = useRef(0);
   const suspiciousTextRef = useRef(0);
 
+  // Server-bound batch buffer. Cleared on successful flush; drained on
+  // unmount/stopMonitoring. Lifecycle events (`monitoring_started`/...) are
+  // dropped server-side, so we don't bother stripping them here.
+  const candidateIdRef = useRef<number | null>(null);
+  const pendingRef = useRef<ProctoringEvent[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const flushPending = useCallback(async () => {
+    const cid = candidateIdRef.current;
+    if (cid == null) return;
+    if (pendingRef.current.length === 0) return;
+    const batch = pendingRef.current;
+    pendingRef.current = [];
+    try {
+      await api.submitProctoringEvents(
+        cid,
+        batch.map((e) => ({
+          event_type: e.type,
+          timestamp: e.timestamp,
+          details: e.details ? { note: e.details } : null,
+        })),
+      );
+    } catch (err) {
+      console.warn('[proctoring] flush failed; re-queueing', err);
+      // Push back onto the front so the next flush retries.
+      pendingRef.current = [...batch, ...pendingRef.current];
+    }
+  }, []);
+
   const addEvent = useCallback((type: string, details?: string) => {
     const event: ProctoringEvent = { type, timestamp: Date.now(), details };
     setEvents(prev => [...prev.slice(-99), event]);
-  }, []);
+    pendingRef.current.push(event);
+    if (pendingRef.current.length >= FLUSH_BATCH_SIZE) {
+      void flushPending();
+    }
+  }, [flushPending]);
 
   const calculateRiskLevel = useCallback(() => {
     const score = 
@@ -156,16 +193,42 @@ export function useProctoring(videoRef: React.RefObject<HTMLVideoElement | null>
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isMonitoring, addEvent, updateStats]);
 
-  // Start/stop monitoring
-  const startMonitoring = useCallback(() => {
+  // Start/stop monitoring. `candidateId` is required so events can be
+  // POSTed to the right row server-side.
+  const startMonitoring = useCallback((candidateId: number) => {
+    candidateIdRef.current = candidateId;
     setIsMonitoring(true);
     addEvent('monitoring_started', 'Proctoring monitoring started');
-  }, [addEvent]);
+    if (flushTimerRef.current == null) {
+      flushTimerRef.current = setInterval(() => {
+        void flushPending();
+      }, FLUSH_INTERVAL_MS);
+    }
+  }, [addEvent, flushPending]);
 
   const stopMonitoring = useCallback(() => {
     setIsMonitoring(false);
     addEvent('monitoring_stopped', 'Proctoring monitoring stopped');
-  }, [addEvent]);
+    if (flushTimerRef.current != null) {
+      clearInterval(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    // Drain whatever's left.
+    void flushPending();
+  }, [addEvent, flushPending]);
+
+  // Drain on unmount as a last-chance flush. Synchronous fetch via
+  // `navigator.sendBeacon` would be safer for unloads, but we don't have a
+  // beacon-friendly endpoint yet.
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current != null) {
+        clearInterval(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      void flushPending();
+    };
+  }, [flushPending]);
 
   // Get proctoring report
   const getReport = useCallback(() => {

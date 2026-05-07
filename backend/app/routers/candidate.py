@@ -30,18 +30,28 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_candidate_token
-from app.models.models import Answer, Candidate, Interview, Question, Recruiter, Topic
+from app.models.models import (
+    Answer,
+    Candidate,
+    Interview,
+    ProctoringEvent,
+    Question,
+    Recruiter,
+    Topic,
+)
 from app.models.schemas import (
     AnswerSubmittedResponse,
     CandidateCreate,
     CandidateRegistrationResponse,
     CandidateResponse,
+    ProctoringEventsBatch,
     QuestionResponse,
 )
 from app.routers.auth import get_current_candidate, get_current_recruiter
@@ -667,30 +677,45 @@ def evaluate_candidate(
 @router.post("/candidate/{candidate_id}/proctoring")
 def save_proctoring_data(
     candidate_id: int,
+    body: ProctoringEventsBatch,
     db: Session = Depends(get_db),
-    recruiter: Recruiter = Depends(get_current_recruiter),
+    candidate: Candidate = Depends(get_current_candidate),
 ):
-    """Persist proctoring events for a candidate.
+    """Persist proctoring events posted by the candidate's browser.
 
-    TODO(persistence): this currently does NOT save the posted events to a
-    dedicated `ProctoringEvent` table — that schema migration is intentionally
-    out of scope for this audit pass. The endpoint validates ownership and
-    acknowledges receipt; risk computation is done at /proctoring/report time
-    using the flags already attached to Answer rows.
+    Authenticated via the candidate session token (events are emitted
+    during the interview, before the recruiter ever sees the candidate's
+    record). The token claim must match the path parameter.
+
+    Server-side `ProctoringEvent.timestamp` is the receive-time, not the
+    client-supplied one — we don't trust client clocks for ordering.
+    Lifecycle events like `monitoring_started`/`monitoring_stopped` are
+    silently dropped: they're UI bookkeeping, not signals.
     """
-    candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
-    if not candidate:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    _ensure_owns_candidate(db, recruiter, candidate)
+    if candidate.id != candidate_id:
+        raise HTTPException(status_code=403, detail="Token/candidate mismatch")
+
+    LIFECYCLE_TYPES = {"monitoring_started", "monitoring_stopped"}
+
+    persisted = 0
+    for event in body.events:
+        if event.event_type in LIFECYCLE_TYPES:
+            continue
+        db.add(
+            ProctoringEvent(
+                candidate_id=candidate_id,
+                event_type=event.event_type,
+                details=event.details,
+            )
+        )
+        persisted += 1
+    db.commit()
 
     return {
         "status": "received",
         "candidate_id": candidate_id,
-        "persisted": False,
-        "note": (
-            "Events are not yet persisted to a ProctoringEvent table. "
-            "Risk score is currently computed from per-answer flags only."
-        ),
+        "persisted": True,
+        "count": persisted,
     }
 
 
@@ -700,7 +725,13 @@ def get_proctoring_report(
     db: Session = Depends(get_db),
     recruiter: Recruiter = Depends(get_current_recruiter),
 ):
-    """Get proctoring report for a candidate."""
+    """Compute the proctoring risk report from persisted events.
+
+    Reads from `proctoring_events` (populated by the candidate's browser
+    via the POST endpoint above). The previous implementation scanned
+    `Answer.flag_reason` for strings that were never written anywhere —
+    every report came back "low risk" regardless of what happened.
+    """
     from app.services.risk_engine import RiskEngine
 
     candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
@@ -708,24 +739,30 @@ def get_proctoring_report(
         raise HTTPException(status_code=404, detail="Candidate not found")
     _ensure_owns_candidate(db, recruiter, candidate)
 
-    answers = db.query(Answer).filter(Answer.candidate_id == candidate_id).all()
-
-    tab_switch_count = sum(
-        1 for a in answers if a.is_flagged and a.flag_reason == "tab_switch"
+    rows = (
+        db.query(ProctoringEvent.event_type, func.count(ProctoringEvent.id))
+        .filter(ProctoringEvent.candidate_id == candidate_id)
+        .group_by(ProctoringEvent.event_type)
+        .all()
     )
-    clipboard_count = sum(
-        1 for a in answers if a.is_flagged and a.flag_reason == "clipboard"
-    )
+    counts: dict[str, int] = {event_type: count for event_type, count in rows}
 
+    # Map the hook's emitted vocabulary onto the RiskEngine's count
+    # parameters. Anything else still contributes via the engine's own
+    # weighting if we add it later.
     risk_result = RiskEngine.calculate_combined_risk(
-        tab_switches=tab_switch_count,
-        clipboard_pastes=clipboard_count,
+        tab_switches=counts.get("tab_switch", 0) + counts.get("window_blur", 0) + counts.get("new_tab", 0),
+        clipboard_copies=counts.get("clipboard_copy", 0) + counts.get("keyboard_copy", 0),
+        clipboard_pastes=counts.get("clipboard_paste", 0) + counts.get("keyboard_paste", 0),
     )
 
     candidate.cheating_risk = risk_result["risk_level"]
     db.commit()
 
-    return risk_result
+    # Surface the raw per-type counts so the recruiter UI can render them
+    # alongside the engine's level. Decision is the recruiter's; we don't
+    # offer a single "cheat probability" number.
+    return {**risk_result, "event_counts": counts}
 
 
 @router.get("/candidate/{candidate_id}/report")

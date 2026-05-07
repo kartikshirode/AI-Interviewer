@@ -295,6 +295,20 @@ class ApiService {
     });
   }
 
+  async submitProctoringEvents(
+    candidateId: number,
+    events: { event_type: string; timestamp?: number; details?: Record<string, unknown> | null }[],
+  ) {
+    return this.request<{ status: string; candidate_id: number; persisted: boolean; count: number }>(
+      `/candidate/candidate/${candidateId}/proctoring`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ events }),
+        useCandidateToken: true,
+      },
+    );
+  }
+
   // Recruiter - Candidates
   async getCandidates(interviewId: number) {
     return this.request(`/interviews/${interviewId}/candidates`);

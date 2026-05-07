@@ -149,3 +149,17 @@ class ProctoringData(BaseModel):
     risk_level: str
     tab_switch_count: int
     clipboard_count: int
+
+
+class ProctoringEventIn(BaseModel):
+    """One proctoring event posted by the candidate's browser. `timestamp`
+    is the client-side time the event happened (epoch ms); the server
+    persists the receive-time on `ProctoringEvent.timestamp` instead — we
+    don't trust client clocks."""
+    event_type: str = Field(..., min_length=1, max_length=50)
+    timestamp: Optional[int] = None
+    details: Optional[dict] = None
+
+
+class ProctoringEventsBatch(BaseModel):
+    events: List[ProctoringEventIn]

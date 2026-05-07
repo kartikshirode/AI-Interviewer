@@ -147,7 +147,7 @@ export default function CandidateInterviewPage() {
       await api.startCandidateInterview(interview.id);
 
       await startMediaCapture();
-      proctoring.startMonitoring();
+      if (candidate) proctoring.startMonitoring(candidate.id);
       
       setTimeLeft(120);
       setState('interview');
