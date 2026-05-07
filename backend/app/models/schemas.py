@@ -43,6 +43,9 @@ class QuestionBase(BaseModel):
 class QuestionResponse(QuestionBase):
     id: int
     interview_id: int
+    # Phase 1: surfaced so the recruiter UI can show the rubric under
+    # each preview question. `None` for legacy rows.
+    rubric_json: Optional[dict] = None
 
     class Config:
         from_attributes = True

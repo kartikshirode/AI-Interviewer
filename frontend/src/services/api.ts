@@ -4,6 +4,19 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
 export const API_BASE = API_BASE_URL;
 
+// Phase 1: per-question scoring rubric. `null` for legacy questions
+// generated before the rubric field existed; the evaluator falls back to
+// a generic prompt for those.
+export interface Rubric {
+  key_concepts: string[];
+  anchors: { '0': string; '1': string; '2': string; '3': string; '4': string };
+}
+
+export interface SampleQuestion {
+  question: string;
+  rubric: Rubric | null;
+}
+
 // FastAPI returns `detail` as a string for HTTPException, but as an array of
 // {loc, msg, type} objects on Pydantic validation failures (422). Render both
 // shapes as a readable string so callers don't show "[object Object]".
@@ -209,7 +222,7 @@ class ApiService {
       difficulty: string;
       skills: string[];
       source: string;
-      questions: string[];
+      questions: SampleQuestion[];
     }>(`/interviews/sample-questions/${topicId}?${params.toString()}`);
   }
 
@@ -229,7 +242,7 @@ class ApiService {
       difficulty: string;
       skills: string[];
       source: string;
-      questions: string[];
+      questions: SampleQuestion[];
     }>(
       `/interviews/sample-questions/by-name/${encodeURIComponent(topicName)}?${params.toString()}`,
     );

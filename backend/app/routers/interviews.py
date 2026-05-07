@@ -253,11 +253,17 @@ def _persist_to_bank(
     difficulty: str,
     skills_key: str,
     skills_list: list[str],
-    questions: list[str],
+    questions: list[tuple[str, dict | None]],
     source: str,
 ) -> None:
-    """Insert generated questions into the QuestionBank, deduping on the
-    (topic, difficulty, skills_key, question_text) unique constraint."""
+    """Insert generated questions + their per-question rubrics into the
+    QuestionBank, deduping on the (topic, difficulty, skills_key,
+    question_text) unique constraint.
+
+    Phase 1: each entry is a `(text, rubric_or_none)` tuple. The rubric
+    is persisted alongside the question so future bank hits skip the
+    Gemini call and the evaluator can anchor scores against it directly.
+    """
     if not questions:
         return
     existing = {
@@ -270,8 +276,8 @@ def _persist_to_bank(
         )
         .all()
     }
-    for q in questions:
-        if q in existing:
+    for q_text, rubric in questions:
+        if q_text in existing:
             continue
         try:
             db.add(
@@ -280,7 +286,8 @@ def _persist_to_bank(
                     difficulty=difficulty,
                     skills_key=skills_key,
                     skills_json=skills_list,
-                    question_text=q,
+                    question_text=q_text,
+                    rubric_json=rubric,
                     source=source,
                 )
             )
@@ -297,22 +304,20 @@ def _resolve_questions(
     skills: list[str],
     count: int = 5,
     force_refresh: bool = False,
-) -> tuple[list[str], str]:
-    """Resolve N questions for (topic, difficulty, skills) — DB bank first,
-    Gemini on cache miss, static fallback if Gemini is unavailable.
+) -> tuple[list[tuple[str, dict | None]], str]:
+    """Resolve N (question_text, rubric) tuples for (topic, difficulty,
+    skills) — DB bank first, Gemini on cache miss, static fallback if
+    Gemini is unavailable.
 
-    Returns (questions, source) where source ∈ {"bank-hit", "gemini",
-    "static"}. The bank is the system-of-record for previously-generated
-    questions; this function persists fresh generations on every miss so
-    subsequent requests are token-free.
+    Phase 1: returns a list of `(text, rubric_or_none)` tuples instead of
+    bare strings. Bank-hit rows surface their persisted rubric. Static
+    fallback rows return rubric=None — the evaluator handles that case
+    with its legacy generic-prompt path.
     """
     skills_list = normalize_skills_list(skills)
     skills_key = normalize_skills_key(skills_list)
 
     if not force_refresh:
-        # Pull a small candidate pool ordered by least-used so the bank
-        # spreads coverage. Random sample within the pool so different
-        # interviews with the same key get different question subsets.
         pool = (
             db.query(QuestionBank)
             .filter(
@@ -331,7 +336,7 @@ def _resolve_questions(
                 row.times_used += 1
                 row.last_used_at = now
             db.commit()
-            return [row.question_text for row in chosen], "bank-hit"
+            return [(row.question_text, row.rubric_json) for row in chosen], "bank-hit"
 
     # Bank short or refresh forced → ask the generator.
     fresh, source = _get_generator().generate(
@@ -408,12 +413,13 @@ def create_interview(
                 skills_list,
                 count=take,
             )
-            for q_text in sample_pool[:take]:
+            for q_text, rubric in sample_pool[:take]:
                 questions_to_create.append(
                     Question(
                         interview_id=db_interview.id,
                         topic_id=topic.id,
                         question_text=q_text,
+                        rubric_json=rubric,
                         source="system",
                     )
                 )
@@ -428,12 +434,13 @@ def create_interview(
                     skills_list,
                     count=take,
                 )
-                for q_text in sample_pool[:take]:
+                for q_text, rubric in sample_pool[:take]:
                     questions_to_create.append(
                         Question(
                             interview_id=db_interview.id,
                             topic_id=None,  # not in the curated catalog
                             question_text=q_text,
+                            rubric_json=rubric,
                             source="system",
                         )
                     )
@@ -576,7 +583,11 @@ def get_sample_questions_for_topic(
         "difficulty": difficulty,
         "skills": skills,
         "source": source,
-        "questions": questions,
+        # Phase 1: each entry surfaces the per-question rubric so the
+        # dashboard preview can disclose what good/bad answers look like.
+        "questions": [
+            {"question": q, "rubric": rubric} for q, rubric in questions
+        ],
     }
 
 
@@ -609,7 +620,9 @@ def get_sample_questions_for_custom_topic(
         "difficulty": difficulty,
         "skills": skills,
         "source": source,
-        "questions": questions,
+        "questions": [
+            {"question": q, "rubric": rubric} for q, rubric in questions
+        ],
     }
 
 

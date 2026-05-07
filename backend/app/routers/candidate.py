@@ -576,6 +576,7 @@ def evaluate_answer(
         transcript=transcript,
         difficulty=difficulty,
         topic=topic,
+        rubric=question.rubric_json if question else None,
     )
 
     if not evaluation.get("_ok", False):
@@ -585,12 +586,18 @@ def evaluate_answer(
             detail=f"Evaluation failed: {evaluation.get('_error', 'unknown error')}",
         )
 
-    answer.correctness = evaluation["correctness"]
-    answer.clarity = evaluation["clarity"]
-    answer.depth = evaluation["depth"]
-    # `Answer.confidence_score` is intentionally left nullable and unwritten
-    # (Phase 0.1): we no longer score delivery / confidence.
-    answer.feedback = evaluation.get("feedback", "")
+    # Phase 1: persist the rubric-anchored fields. The legacy
+    # correctness/clarity/depth columns stay nullable for back-compat
+    # but only get populated when the legacy prompt path runs (i.e.
+    # questions without a rubric).
+    answer.rubric_score = evaluation.get("rubric_score")
+    answer.rubric_justification = evaluation.get("justification") or None
+    answer.missing_concepts = evaluation.get("missing_concepts") or None
+    if evaluation.get("_legacy"):
+        answer.correctness = evaluation.get("correctness")
+        answer.clarity = evaluation.get("clarity")
+        answer.depth = evaluation.get("depth")
+    answer.feedback = evaluation.get("justification", "") or evaluation.get("feedback", "")
     db.commit()
 
     return evaluation
@@ -641,6 +648,7 @@ def evaluate_candidate(
             transcript=transcript,
             difficulty=difficulty,
             topic=topic,
+            rubric=question.rubric_json if question else None,
         )
 
         if not evaluation.get("_ok", False):
@@ -648,11 +656,16 @@ def evaluate_candidate(
             # poisoning the DB with dummies.
             continue
 
-        answer.correctness = evaluation["correctness"]
-        answer.clarity = evaluation["clarity"]
-        answer.depth = evaluation["depth"]
-        # See evaluate_answer endpoint — confidence_score intentionally unwritten.
-        answer.feedback = evaluation.get("feedback", "")
+        answer.rubric_score = evaluation.get("rubric_score")
+        answer.rubric_justification = evaluation.get("justification") or None
+        answer.missing_concepts = evaluation.get("missing_concepts") or None
+        if evaluation.get("_legacy"):
+            answer.correctness = evaluation.get("correctness")
+            answer.clarity = evaluation.get("clarity")
+            answer.depth = evaluation.get("depth")
+        answer.feedback = (
+            evaluation.get("justification", "") or evaluation.get("feedback", "")
+        )
         answer_evaluations.append(evaluation)
 
     final_scores = evaluation_service.calculate_final_score(answer_evaluations)
@@ -799,13 +812,36 @@ def get_candidate_report(
         question = answer.question
         topic = question.topic.name if question and question.topic else None
 
+        # Phase 1: a per-answer rubric_score is the primary signal. For
+        # legacy answers without one we fall back to the mean of the
+        # 0-10 trio scaled to 0-4 so the report can still display a
+        # number.
+        rubric_score = answer.rubric_score
+        if rubric_score is None and answer.correctness is not None:
+            rubric_score = round(
+                (
+                    float(answer.correctness or 5)
+                    + float(answer.clarity or 5)
+                    + float(answer.depth or 5)
+                ) / 3 / 2.5,
+                2,
+            )
+
         question_evaluations.append(
             {
                 "question_id": question.id if question else None,
                 "question_text": question.question_text if question else "",
+                "rubric": question.rubric_json if question else None,
                 "topic": topic,
                 "transcript": answer.transcript,
                 "video_path": answer.video_path,
+                # Phase 1 surface
+                "rubric_score": rubric_score,
+                "rubric_justification": answer.rubric_justification,
+                "missing_concepts": answer.missing_concepts or [],
+                "is_legacy_evaluation": answer.rubric_score is None
+                and answer.correctness is not None,
+                # Legacy debugging fields — kept for old answers
                 "correctness": answer.correctness,
                 "clarity": answer.clarity,
                 "depth": answer.depth,
@@ -814,29 +850,20 @@ def get_candidate_report(
             }
         )
 
-        if topic and answer.correctness is not None:
+        if topic and rubric_score is not None:
             bucket = topic_scores.setdefault(topic, {"total": 0.0, "count": 0})
-            bucket["total"] += answer.correctness
+            bucket["total"] += rubric_score
             bucket["count"] += 1
 
-        # Re-use the same shape evaluation_service expects for aggregation.
-        if answer.correctness is not None:
-            answer_eval_dicts.append(
-                {
-                    "correctness": answer.correctness,
-                    "clarity": answer.clarity if answer.clarity is not None else 5,
-                    "depth": answer.depth if answer.depth is not None else 5,
-                }
-            )
+        if rubric_score is not None:
+            answer_eval_dicts.append({"rubric_score": rubric_score})
 
     topic_averages = {
         t: round(d["total"] / d["count"], 2) if d["count"] > 0 else 0
         for t, d in topic_scores.items()
     }
 
-    # Use the same formula as evaluation_service.calculate_final_score for
-    # consistency (ISSUE-28). After Phase 0.1, communication_score is no
-    # longer mixed into the final score; it persists informationally only.
+    # Phase 1: aggregator now consumes rubric_score directly.
     aggregated = evaluation_service.calculate_final_score(answer_eval_dicts)
     technical_score = aggregated["technical_score"] if aggregated else None
 

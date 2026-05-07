@@ -5,8 +5,17 @@ QuestionBank table in the database is the system-of-record for previously
 generated questions. This service only knows how to produce a fresh batch
 when asked.
 
+Phase 1: each generated question now ships with a per-question rubric
+(`{key_concepts: [...], anchors: {"0": ..., "4": ...}}`). Per-question
+rubrics raise LLM-grader agreement with humans from ICC ~0.56 to ~0.82
+(Pathak et al. ICER 2025) — the single biggest scoring quality win
+available. Generation cost is unchanged because the rubric comes back in
+the same Gemini call as the question.
+
 If `GEMINI_API_KEY` is unset OR the call raises, we degrade to the static
-`fallback_provider` so the feature stays usable in dev / offline.
+`fallback_provider` so the feature stays usable in dev / offline. Static
+fallback returns rubrics as `None`; the evaluator handles that case via
+its legacy generic-prompt path.
 """
 
 from __future__ import annotations
@@ -15,7 +24,7 @@ import json
 import logging
 import os
 import re
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 import google.generativeai as genai
 
@@ -23,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
+
+
+# A `(question_text, rubric | None)` pair returned to the caller. The
+# resolver and bank persistence code use this same shape.
+QuestionWithRubric = Tuple[str, Optional[dict]]
 
 
 def _extract_json_array(text: str) -> Optional[list]:
@@ -44,6 +58,57 @@ def _extract_json_array(text: str) -> Optional[list]:
             except json.JSONDecodeError:
                 return None
     return None
+
+
+# ── Rubric validation ──────────────────────────────────────────────────────
+
+
+_REQUIRED_ANCHOR_KEYS = {"0", "1", "2", "3", "4"}
+
+
+def _validate_rubric(rubric: Any) -> Optional[dict]:
+    """Strictly validate the per-question rubric shape Gemini returns.
+
+    Returns the normalized rubric on success, or `None` on any malformation
+    so the caller treats the question as legacy. We never reject the
+    question itself — a missing rubric is the legacy fallback path, not a
+    fatal error.
+
+    Required shape:
+      {
+        "key_concepts": [<non-empty str>, ...],   # at least one
+        "anchors": {
+          "0": <non-empty str>,
+          "1": <non-empty str>,
+          "2": <non-empty str>,
+          "3": <non-empty str>,
+          "4": <non-empty str>,
+        }
+      }
+    """
+    if not isinstance(rubric, dict):
+        return None
+    key_concepts = rubric.get("key_concepts")
+    anchors = rubric.get("anchors")
+    if not isinstance(key_concepts, list) or not key_concepts:
+        return None
+    cleaned_concepts = [str(c).strip() for c in key_concepts if isinstance(c, str) and str(c).strip()]
+    if not cleaned_concepts:
+        return None
+    if not isinstance(anchors, dict):
+        return None
+    if set(map(str, anchors.keys())) != _REQUIRED_ANCHOR_KEYS:
+        return None
+    cleaned_anchors: dict[str, str] = {}
+    for k in _REQUIRED_ANCHOR_KEYS:
+        val = anchors.get(k) or anchors.get(int(k)) if hasattr(anchors, "get") else None
+        if not isinstance(val, str) or not val.strip():
+            return None
+        cleaned_anchors[k] = val.strip()
+    return {"key_concepts": cleaned_concepts, "anchors": cleaned_anchors}
+
+
+# ──────────────────────────────────────────────────────────────────────────
 
 
 class QuestionGenerator:
@@ -68,11 +133,14 @@ class QuestionGenerator:
         difficulty: str,
         skills: Optional[List[str]] = None,
         count: int = 5,
-    ) -> tuple[List[str], str]:
-        """Return (questions, source) where source is "gemini" or "static".
+    ) -> tuple[List[QuestionWithRubric], str]:
+        """Return (questions_with_rubrics, source) where source is
+        "gemini" or "static".
 
-        No caching — caller is expected to persist the result to the
-        QuestionBank table so the next request can hit the DB directly.
+        Each item is a `(question_text, rubric_or_none)` tuple. Static
+        fallback never includes rubrics (we don't author them by hand);
+        the evaluator handles the legacy path. No caching — caller is
+        expected to persist the result to the QuestionBank table.
         """
         count = max(1, min(int(count), self.MAX_QUESTIONS))
         topic_name = str(topic_name)
@@ -81,9 +149,9 @@ class QuestionGenerator:
 
         if self._model is not None:
             try:
-                questions = self._call_gemini(topic_name, difficulty, skills, count)
-                if questions:
-                    return questions[:count], "gemini"
+                pairs = self._call_gemini(topic_name, difficulty, skills, count)
+                if pairs:
+                    return pairs[:count], "gemini"
             except Exception:
                 logger.exception(
                     "Gemini question generation failed for (%s, %s, skills=%s)",
@@ -92,8 +160,9 @@ class QuestionGenerator:
                     skills,
                 )
 
-        # Fallback path — static bank doesn't know about skills.
-        return list(self._fallback(topic_name, difficulty))[:count], "static"
+        # Fallback path — static bank doesn't carry rubrics.
+        static_questions = list(self._fallback(topic_name, difficulty))[:count]
+        return [(q, None) for q in static_questions], "static"
 
     # ── Internals ───────────────────────────────────────────────────────
 
@@ -103,7 +172,7 @@ class QuestionGenerator:
         difficulty: str,
         skills: List[str],
         count: int,
-    ) -> Optional[List[str]]:
+    ) -> Optional[List[QuestionWithRubric]]:
         prompt = self._build_prompt(topic_name, difficulty, skills, count)
         response = self._model.generate_content(  # type: ignore[union-attr]
             prompt,
@@ -113,17 +182,22 @@ class QuestionGenerator:
         parsed = _extract_json_array(text)
         if not parsed:
             return None
-        questions: List[str] = []
+
+        pairs: List[QuestionWithRubric] = []
         for item in parsed:
+            # Phase 1 shape: {"question": str, "rubric": {...}}.
+            # Pre-Phase-1 / fallback shape: bare string. Both flow.
             if isinstance(item, str):
                 q = item.strip()
+                rubric: Optional[dict] = None
             elif isinstance(item, dict):
                 q = str(item.get("question") or item.get("q") or "").strip()
+                rubric = _validate_rubric(item.get("rubric"))
             else:
                 continue
             if q:
-                questions.append(q)
-        return questions or None
+                pairs.append((q, rubric))
+        return pairs or None
 
     @staticmethod
     def _build_prompt(
@@ -160,6 +234,24 @@ class QuestionGenerator:
             f"Each question must be a single self-contained sentence or short "
             f"paragraph that an interviewer would actually ask. Do not number "
             f"them, do not prefix with 'Q:', do not include answers.\n\n"
-            f"Return ONLY a JSON array of strings — no commentary, no markdown.\n"
-            f"Example shape: [\"question one\", \"question two\"]"
+            f"For EACH question, also produce a per-question scoring rubric "
+            f"with this exact structure:\n"
+            f"  - `key_concepts`: a non-empty list of 2–5 short phrases naming "
+            f"the specific concepts an excellent answer must address.\n"
+            f"  - `anchors`: an object with the keys \"0\", \"1\", \"2\", \"3\", "
+            f"\"4\", each mapping to a one-sentence description of an answer at "
+            f"that level. Use this rubric:\n"
+            f"      0 → No answer or completely off-topic\n"
+            f"      1 → Vague — gestures at the topic without explaining it\n"
+            f"      2 → Partial — describes some elements but misses key distinctions\n"
+            f"      3 → Specific — explains the core concepts correctly\n"
+            f"      4 → Exemplary — adds a concrete tradeoff, edge case, or example\n"
+            f"The anchors must be specific to THIS question — not generic "
+            f"placeholders. They are what the evaluator will use to anchor the "
+            f"score.\n\n"
+            f"Return ONLY a JSON array — no commentary, no markdown — where "
+            f"each element has this exact shape:\n"
+            f"[{{\"question\": \"<text>\", \"rubric\": {{\"key_concepts\": "
+            f"[\"...\"], \"anchors\": {{\"0\": \"...\", \"1\": \"...\", "
+            f"\"2\": \"...\", \"3\": \"...\", \"4\": \"...\"}}}}}}]"
         )

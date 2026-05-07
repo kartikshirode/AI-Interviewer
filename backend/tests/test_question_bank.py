@@ -14,12 +14,36 @@ from app.routers.interviews import _persist_to_bank, _resolve_questions
 from app.services.skills import normalize_skills_key
 
 
-def _stub_generate(questions: list[str]):
-    """Build a generator stub that returns `questions` and reports source 'gemini'."""
+def _stub_generate(questions: list[str], with_rubric: bool = False):
+    """Build a generator stub returning the Phase-1 tuple shape.
+
+    The generator API now returns `[(question_text, rubric|None), ...]`.
+    By default this stub passes `rubric=None` so the bank rows get the
+    legacy fallback path; pass `with_rubric=True` to attach a synthetic
+    valid rubric to each question for tests that need it.
+    """
     counter = itertools.count(1)
 
     def _fn(self, topic_name, difficulty, skills=None, count=5):
-        return ([f"{q} #{next(counter)}" for q in questions[:count]], "gemini")
+        pairs = []
+        for q in questions[:count]:
+            text = f"{q} #{next(counter)}"
+            rubric = (
+                {
+                    "key_concepts": ["concept-A", "concept-B"],
+                    "anchors": {
+                        "0": "no answer",
+                        "1": "vague",
+                        "2": "partial",
+                        "3": "specific",
+                        "4": "exemplary",
+                    },
+                }
+                if with_rubric
+                else None
+            )
+            pairs.append((text, rubric))
+        return (pairs, "gemini")
 
     return _fn
 
@@ -44,12 +68,16 @@ def test_first_call_invokes_gemini_and_persists(db_session):
 
     assert source == "gemini"
     assert len(questions) == 3
+    # Phase 1: each item is a (text, rubric_or_none) tuple.
+    assert all(isinstance(item, tuple) and len(item) == 2 for item in questions)
     rows = db_session.query(QuestionBank).all()
     assert len(rows) == 3
     assert all(r.topic_name == "Python" for r in rows)
     assert all(r.difficulty == "medium" for r in rows)
     assert all(r.skills_key == "asyncio" for r in rows)
     assert all(r.times_used == 0 for r in rows)
+    # Stub returned rubric=None → bank rows store None for the rubric.
+    assert all(r.rubric_json is None for r in rows)
 
 
 def test_second_call_serves_from_bank_without_gemini(db_session):
@@ -72,7 +100,7 @@ def test_second_call_serves_from_bank_without_gemini(db_session):
 
     def _boom(self, *a, **kw):
         sentinel["called"] = True
-        return (["should-not-be-used"], "gemini")
+        return ([("should-not-be-used", None)], "gemini")
 
     with patch(
         "app.services.question_generator.QuestionGenerator.generate",
@@ -85,7 +113,9 @@ def test_second_call_serves_from_bank_without_gemini(db_session):
     assert sentinel["called"] is False
     assert source == "bank-hit"
     assert len(questions) == 3
-    assert all(q in {"q1", "q2", "q3", "q4", "q5"} for q in questions)
+    # Each item is now (text, rubric_or_none).
+    texts = {text for text, _ in questions}
+    assert texts.issubset({"q1", "q2", "q3", "q4", "q5"})
     # times_used must increment on the chosen rows.
     used = (
         db_session.query(QuestionBank)
@@ -146,13 +176,14 @@ def test_different_skills_create_separate_buckets(db_session):
 
 
 def test_persist_dedupes_on_unique_constraint(db_session):
+    """Phase 1: _persist_to_bank now takes (text, rubric) tuples."""
     _persist_to_bank(
         db_session,
         topic_name="Rust",
         difficulty="easy",
         skills_key="tokio",
         skills_list=["tokio"],
-        questions=["Q1", "Q2"],
+        questions=[("Q1", None), ("Q2", None)],
         source="gemini",
     )
     # Re-insert the same set; unique constraint should swallow duplicates.
@@ -162,7 +193,7 @@ def test_persist_dedupes_on_unique_constraint(db_session):
         difficulty="easy",
         skills_key="tokio",
         skills_list=["tokio"],
-        questions=["Q1", "Q2", "Q3"],
+        questions=[("Q1", None), ("Q2", None), ("Q3", None)],
         source="gemini",
     )
     rows = db_session.query(QuestionBank).filter_by(topic_name="Rust").all()

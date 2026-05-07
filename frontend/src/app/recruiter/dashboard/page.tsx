@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { api } from '@/services/api';
+import { api, type SampleQuestion } from '@/services/api';
 
 interface Interview {
   id: number;
@@ -45,7 +45,9 @@ export default function RecruiterDashboard() {
   const [customTopicName, setCustomTopicName] = useState('');
   const [customSkillInput, setCustomSkillInput] = useState('');
   // Cached preview of generated questions, keyed by topic id (or sentinel).
-  const [sampleQuestions, setSampleQuestions] = useState<Record<number, string[]>>({});
+  const [sampleQuestions, setSampleQuestions] = useState<Record<number, SampleQuestion[]>>({});
+  // Per-question rubric disclosure toggles, keyed by `${topicKey}:${idx}`.
+  const [rubricOpen, setRubricOpen] = useState<Record<string, boolean>>({});
   const [previewSource, setPreviewSource] = useState<Record<number, string>>({});
   const [loadingTopics, setLoadingTopics] = useState<Record<number, boolean>>({});
 
@@ -481,10 +483,59 @@ export default function RecruiterDashboard() {
                               No questions generated for this topic — only your custom questions will be used.
                             </div>
                           ) : (
-                            <ol className="list-decimal list-inside space-y-1 text-sm text-slate-300">
-                              {questions.map((q, idx) => (
-                                <li key={idx}>{q}</li>
-                              ))}
+                            <ol className="list-decimal list-inside space-y-2 text-sm text-slate-300">
+                              {questions.map((q, idx) => {
+                                const rubricKey = `${topicKey}:${idx}`;
+                                const open = rubricOpen[rubricKey];
+                                return (
+                                  <li key={idx} className="space-y-1">
+                                    <div className="inline">{q.question}</div>
+                                    {q.rubric ? (
+                                      <div className="ml-5">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setRubricOpen((prev) => ({
+                                              ...prev,
+                                              [rubricKey]: !prev[rubricKey],
+                                            }))
+                                          }
+                                          className="text-xs text-blue-400 hover:text-blue-300"
+                                        >
+                                          {open ? '▾ Hide rubric' : '▸ Show rubric'}
+                                        </button>
+                                        {open && (
+                                          <div className="mt-2 p-3 bg-slate-900/60 border border-slate-700/50 rounded-lg space-y-2 text-xs text-slate-300">
+                                            <div>
+                                              <div className="text-slate-400 mb-1">Key concepts</div>
+                                              <ul className="list-disc list-inside space-y-0.5">
+                                                {q.rubric.key_concepts.map((c, ci) => (
+                                                  <li key={ci}>{c}</li>
+                                                ))}
+                                              </ul>
+                                            </div>
+                                            <div>
+                                              <div className="text-slate-400 mb-1">Score anchors</div>
+                                              <div className="space-y-0.5 font-mono">
+                                                {(['0', '1', '2', '3', '4'] as const).map((lvl) => (
+                                                  <div key={lvl}>
+                                                    <span className="text-slate-500">{lvl}/4</span>{' '}
+                                                    {q.rubric!.anchors[lvl]}
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="ml-5 text-xs text-slate-500 italic">
+                                        Legacy question — generated before rubrics existed; the evaluator will use a generic prompt.
+                                      </div>
+                                    )}
+                                  </li>
+                                );
+                              })}
                             </ol>
                           )}
                         </div>

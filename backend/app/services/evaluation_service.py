@@ -90,52 +90,155 @@ class EvaluationService:
         transcript: str,
         difficulty: str = "medium",
         topic: Optional[str] = None,
+        rubric: Optional[dict] = None,
     ) -> Dict[str, Any]:
-        """Evaluate a candidate's answer using Gemini.
+        """Evaluate a candidate's answer.
 
-        Scores the *content* of the answer only — not delivery. We
-        deliberately do not ask the model to assess "confidence" or any
-        other prosody-adjacent quality. Delivery scoring biases against
-        accented speakers, neurodivergent candidates, and anxious
-        candidates, has no defensible job-performance correlation, and
-        sits at the centre of the ACLU v. Intuit/HireVue complaint.
+        Phase 1: when a per-question rubric is supplied, the evaluator
+        anchors the score against that rubric (`rubric_score: 0-4`).
+        Per-question rubrics raise LLM-grader agreement with humans from
+        ICC ≈ 0.56 to ≈ 0.82. When no rubric is supplied (legacy
+        questions generated before Phase 1), we fall back to the generic
+        prompt and return `_legacy: True` so the recruiter UI can flag
+        the lower-confidence path.
+
+        Scores the *content* of the answer only — never delivery. The
+        rubric anchors are about substance ("explains the GIL serializes
+        execution"), not about how smoothly the candidate sounded.
         """
+        if rubric is not None:
+            return self._evaluate_with_rubric(
+                question, transcript, rubric, difficulty=difficulty, topic=topic
+            )
+        return self._evaluate_legacy(
+            question, transcript, difficulty=difficulty, topic=topic
+        )
 
+    def _evaluate_with_rubric(
+        self,
+        question: str,
+        transcript: str,
+        rubric: dict,
+        difficulty: str,
+        topic: Optional[str],
+    ) -> Dict[str, Any]:
+        # Pretty-print the anchors so the model sees one labeled line per
+        # level — that maximises the chance it picks a specific anchor
+        # rather than averaging.
+        anchors = rubric.get("anchors", {})
+        key_concepts = rubric.get("key_concepts", [])
+        anchor_block = "\n".join(
+            f"  {level}: {anchors.get(str(level), '').strip()}" for level in (0, 1, 2, 3, 4)
+        )
+        concepts_block = "\n".join(f"  - {c}" for c in key_concepts)
+
+        topic_line = f"Topic: {topic}\n" if topic else ""
+
+        system_prompt = f"""You are an interviewer scoring a single candidate answer against a rubric anchored to this specific question. Score the substance of what was said. Do NOT score delivery, fluency, accent, hesitation, or confidence.
+
+Question: {question}
+Difficulty: {difficulty}
+{topic_line}
+Key concepts an excellent answer must address:
+{concepts_block}
+
+Score anchors (pick the level whose description best fits the answer):
+{anchor_block}
+
+Pick exactly one of {{0, 1, 2, 3, 4}} as `rubric_score`. Quote or paraphrase a specific phrase from the candidate's answer in `justification` to ground the score (one sentence). In `missing_concepts`, list the key concepts above that the candidate did NOT address (verbatim from the list, or empty list if all addressed).
+
+Return ONLY this JSON object — no markdown fences, no commentary:
+{{
+  "rubric_score": <0|1|2|3|4>,
+  "justification": "<one sentence anchoring the score>",
+  "missing_concepts": ["<concept verbatim>", ...]
+}}"""
+
+        try:
+            response = self.model.generate_content(
+                f"{system_prompt}\n\nCandidate's answer:\n{transcript}",
+                generation_config={
+                    "temperature": 0.2,
+                    "max_output_tokens": 400,
+                    "response_mime_type": "application/json",
+                },
+            )
+
+            result = _extract_json(getattr(response, "text", "") or "")
+            if not result:
+                raise ValueError("Gemini returned non-JSON or empty content")
+
+            score_raw = result.get("rubric_score")
+            try:
+                score = int(score_raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"rubric_score not an int: {score_raw!r}")
+            if score not in (0, 1, 2, 3, 4):
+                raise ValueError(f"rubric_score out of range: {score}")
+
+            justification = str(result.get("justification") or "").strip()
+            raw_missing = result.get("missing_concepts") or []
+            if isinstance(raw_missing, list):
+                missing = [str(c).strip() for c in raw_missing if str(c).strip()]
+            else:
+                missing = []
+
+            return {
+                "rubric_score": score,
+                "justification": justification,
+                "missing_concepts": missing,
+                "_legacy": False,
+                "_ok": True,
+            }
+        except Exception as e:
+            print(f"Error evaluating answer (rubric path): {e}")
+            return {
+                "rubric_score": None,
+                "justification": "",
+                "missing_concepts": [],
+                "_legacy": False,
+                "_ok": False,
+                "_error": str(e),
+            }
+
+    def _evaluate_legacy(
+        self,
+        question: str,
+        transcript: str,
+        difficulty: str,
+        topic: Optional[str],
+    ) -> Dict[str, Any]:
+        """Pre-Phase-1 generic evaluation. Used when a question has no
+        per-question rubric (e.g. it was generated before Phase 1, or the
+        static fallback bank surfaced it). The recruiter UI flags these
+        as lower-confidence so they're easy to triage.
+        """
         system_prompt = f"""You are an expert technical interviewer evaluating a candidate's answer.
 Evaluate the answer based on the substance of what was said:
 1. Correctness (0-10): Is the technical content accurate?
 2. Clarity (0-10): Is the explanation clear and well-structured?
 3. Depth (0-10): Does the answer show good understanding of the topic?
 
-Do NOT score how confident, fluent, assertive, or smooth the candidate sounds.
-Do NOT penalise hesitations, fillers, accents, or non-native phrasing.
-Score only the substance of what was said.
-
-Compute an overall score (0-100) as the unweighted mean of correctness,
-clarity, and depth multiplied by 10 (i.e. mean(0-10 scores) * 10).
+Do NOT score delivery, fluency, accent, hesitation, or confidence.
 
 Difficulty level: {difficulty}
 {f"Topic: {topic}" if topic else ""}
 
 Return ONLY a single JSON object with the keys:
 {{
-    "score": <overall score 0-100>,
     "correctness": <score 0-10>,
     "clarity": <score 0-10>,
     "depth": <score 0-10>,
-    "feedback": "<detailed feedback on the answer>",
-    "strengths": ["<strength 1>", "<strength 2>"],
-    "areas_for_improvement": ["<area 1>", "<area 2>"]
+    "feedback": "<one-sentence feedback>"
 }}
-
-Do not wrap the JSON in markdown fences. Be strict but fair."""
+Do not wrap the JSON in markdown fences."""
 
         try:
             response = self.model.generate_content(
                 f"{system_prompt}\n\nQuestion: {question}\n\nAnswer: {transcript}",
                 generation_config={
                     "temperature": 0.3,
-                    "max_output_tokens": 600,
+                    "max_output_tokens": 400,
                     "response_mime_type": "application/json",
                 },
             )
@@ -144,116 +247,72 @@ Do not wrap the JSON in markdown fences. Be strict but fair."""
             if not result:
                 raise ValueError("Gemini returned non-JSON or empty content")
 
+            # Map the 0-10 trio to a 0-4 rubric_score so the report's
+            # aggregator has a single column to average. Mean of
+            # correctness/clarity/depth, then divide by 2.5 (10 → 4).
+            try:
+                trio = (
+                    float(result.get("correctness", 5)),
+                    float(result.get("clarity", 5)),
+                    float(result.get("depth", 5)),
+                )
+            except (TypeError, ValueError):
+                trio = (5.0, 5.0, 5.0)
+            rubric_score_equiv = round(sum(trio) / 3 / 2.5, 2)
+
             return {
-                "score": result.get("score", 50),
-                "correctness": result.get("correctness", 5),
-                "clarity": result.get("clarity", 5),
-                "depth": result.get("depth", 5),
-                "feedback": result.get("feedback", ""),
-                "strengths": result.get("strengths", []),
-                "areas_for_improvement": result.get("areas_for_improvement", []),
+                "rubric_score": rubric_score_equiv,
+                "justification": str(result.get("feedback") or "").strip(),
+                "missing_concepts": [],
+                # Legacy debugging fields — recruiter UI may show them
+                # under a "raw scores" disclosure for legacy answers.
+                "correctness": trio[0],
+                "clarity": trio[1],
+                "depth": trio[2],
+                "_legacy": True,
                 "_ok": True,
             }
         except Exception as e:
-            print(f"Error evaluating answer: {e}")
+            print(f"Error evaluating answer (legacy path): {e}")
             return {
-                "score": 50,
-                "correctness": 5,
-                "clarity": 5,
-                "depth": 5,
-                "feedback": "Evaluation failed",
-                "strengths": [],
-                "areas_for_improvement": [],
+                "rubric_score": None,
+                "justification": "",
+                "missing_concepts": [],
+                "_legacy": True,
                 "_ok": False,
                 "_error": str(e),
-            }
-
-    def evaluate_communication(
-        self, transcript: str, question_count: int = 1
-    ) -> Dict[str, Any]:
-        """Evaluate communication skills based on all transcripts."""
-
-        system_prompt = """You are evaluating a candidate's communication skills during an interview.
-Analyze their overall communication based on:
-1. Clarity of expression (0-10)
-2. Professionalism (0-10)
-3. Conciseness (0-10)
-4. Confidence indicator (0-10)
-
-Return ONLY a single JSON object with the keys:
-{
-    "communication_score": <average 0-10>,
-    "clarity": <score 0-10>,
-    "professionalism": <score 0-10>,
-    "conciseness": <score 0-10>,
-    "confidence": <score 0-10>,
-    "overall_feedback": "<overall communication feedback>"
-}
-Do not wrap the JSON in markdown fences."""
-
-        try:
-            response = self.model.generate_content(
-                f"{system_prompt}\n\nCandidate's answers:\n\n{transcript}",
-                generation_config={
-                    "temperature": 0.3,
-                    "max_output_tokens": 500,
-                    "response_mime_type": "application/json",
-                },
-            )
-
-            result = _extract_json(getattr(response, "text", "") or "")
-            if not result:
-                raise ValueError("Gemini returned non-JSON or empty content")
-
-            return {
-                "communication_score": result.get("communication_score", 7),
-                "clarity": result.get("clarity", 7),
-                "professionalism": result.get("professionalism", 7),
-                "conciseness": result.get("conciseness", 7),
-                "confidence": result.get("confidence", 7),
-                "overall_feedback": result.get("overall_feedback", ""),
-            }
-        except Exception as e:
-            print(f"Error evaluating communication: {e}")
-            return {
-                "communication_score": 7,
-                "clarity": 7,
-                "professionalism": 7,
-                "conciseness": 7,
-                "confidence": 7,
-                "overall_feedback": "Communication evaluation failed",
             }
 
     def calculate_final_score(self, answers: list) -> Optional[Dict[str, Any]]:
         """Calculate final aggregated score from per-answer evaluations.
 
-        The score is the unweighted mean of correctness/clarity/depth across
-        all answers, scaled to 0-100. Delivery scoring (confidence, prosody)
-        was removed in Phase 0.1. Returns None when there are no answers
-        (callers must distinguish "no data" from a 0% score).
+        Phase 1: score is the mean of `rubric_score` (each on 0-4) across
+        all answers, scaled to 0-100 by ×25. Returns None when there are
+        no answers — callers must distinguish "no data" from a 0% score.
+        Answers without a `rubric_score` (e.g. failed evaluation) are
+        skipped — they do not pull the mean down.
         """
-        num_answers = len(answers) if answers else 0
-        if num_answers == 0:
+        if not answers:
+            return None
+        rubric_scores = [
+            float(a["rubric_score"])
+            for a in answers
+            if a.get("rubric_score") is not None
+        ]
+        if not rubric_scores:
             return None
 
-        total_correctness = sum(a.get("correctness", 5) for a in answers)
-        total_clarity = sum(a.get("clarity", 5) for a in answers)
-        total_depth = sum(a.get("depth", 5) for a in answers)
-
-        final_score = (
-            (total_correctness + total_clarity + total_depth) / (3 * num_answers) * 10
-        )
+        n = len(rubric_scores)
+        mean_rubric = sum(rubric_scores) / n
+        final_score = mean_rubric * 25  # 0-4 → 0-100
 
         return {
             "final_score": round(final_score, 2),
-            # `technical_score` retained as an alias for backward compatibility
-            # with callers that still read it; same value as `final_score`
-            # now that confidence/communication weighting is gone.
+            # `technical_score` retained as an alias for back-compat with
+            # callers that still read it.
             "technical_score": round(final_score, 2),
-            "total_questions": num_answers,
-            "average_correctness": round(total_correctness / num_answers, 2),
-            "average_clarity": round(total_clarity / num_answers, 2),
-            "average_depth": round(total_depth / num_answers, 2),
+            "mean_rubric_score": round(mean_rubric, 2),
+            "total_questions": n,
         }
 
 

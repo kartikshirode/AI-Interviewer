@@ -341,40 +341,95 @@ export default function InterviewCandidatesPage() {
                 </div>
               )}
 
-              {/* Question Evaluations */}
+              {/* Question Evaluations — Phase 1: rubric-anchored. Each
+                  question shows the chosen 0-4 anchor, the one-sentence
+                  justification, and any concepts the candidate missed.
+                  Legacy answers (no rubric on the question, e.g. generated
+                  before Phase 1) fall back to the old correctness/clarity/
+                  depth display under a "Legacy" badge. */}
               <div>
                 <h3 className="text-sm font-medium text-slate-400 mb-3">Question Evaluations</h3>
                 <div className="space-y-4">
-                  {report.question_evaluations?.map((q: any, idx: number) => (
-                    <div key={idx} className="bg-slate-900/30 border border-slate-700/50 rounded-xl p-4">
-                      <div className="flex justify-between items-start mb-3">
-                        <p className="text-white font-medium">{q.question_text}</p>
-                        {q.is_flagged && (
-                          <span className="px-2 py-1 bg-red-500/20 text-red-400 rounded text-xs">
-                            Flagged
-                          </span>
+                  {report.question_evaluations?.map((q: any, idx: number) => {
+                    const rubricScore: number | null = q.rubric_score ?? null;
+                    const isLegacy: boolean = !!q.is_legacy_evaluation;
+                    return (
+                      <div key={idx} className="bg-slate-900/30 border border-slate-700/50 rounded-xl p-4">
+                        <div className="flex justify-between items-start gap-3 mb-3">
+                          <p className="text-white font-medium flex-1">{q.question_text}</p>
+                          <div className="flex gap-2 shrink-0">
+                            {isLegacy && (
+                              <span className="px-2 py-1 bg-slate-600/30 text-slate-300 rounded text-xs">
+                                Legacy
+                              </span>
+                            )}
+                            {q.is_flagged && (
+                              <span className="px-2 py-1 bg-red-500/20 text-red-400 rounded text-xs">
+                                Flagged
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Rubric-anchored score: the headline number. */}
+                        {rubricScore !== null ? (
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-2xl font-bold text-white">
+                              {Number(rubricScore).toFixed(rubricScore % 1 === 0 ? 0 : 2)}
+                            </span>
+                            <span className="text-sm text-slate-500">/ 4</span>
+                            {q.rubric?.anchors?.[String(Math.round(rubricScore))] && !isLegacy && (
+                              <span className="text-xs text-slate-400 ml-3 italic">
+                                Anchor: {q.rubric.anchors[String(Math.round(rubricScore))]}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-slate-500 italic">Not evaluated.</div>
+                        )}
+
+                        {q.rubric_justification && (
+                          <p className="mt-2 text-sm text-slate-300">
+                            <span className="text-slate-500">Why:</span> {q.rubric_justification}
+                          </p>
+                        )}
+
+                        {Array.isArray(q.missing_concepts) && q.missing_concepts.length > 0 && (
+                          <div className="mt-2">
+                            <p className="text-xs text-slate-500 mb-1">Missing concepts</p>
+                            <div className="flex flex-wrap gap-1">
+                              {q.missing_concepts.map((c: string, i: number) => (
+                                <span key={i} className="px-2 py-0.5 bg-amber-500/10 text-amber-300 border border-amber-500/30 rounded text-xs">
+                                  {c}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Legacy debug fields — kept available for old answers. */}
+                        {isLegacy && (q.correctness != null || q.clarity != null || q.depth != null) && (
+                          <details className="mt-3">
+                            <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300">Raw legacy scores</summary>
+                            <div className="mt-2 flex gap-4 text-xs text-slate-400">
+                              <span>Correctness: <span className="text-white">{q.correctness ?? '-'}</span></span>
+                              <span>Clarity: <span className="text-white">{q.clarity ?? '-'}</span></span>
+                              <span>Depth: <span className="text-white">{q.depth ?? '-'}</span></span>
+                            </div>
+                          </details>
+                        )}
+
+                        {q.transcript && (
+                          <details className="mt-3">
+                            <summary className="text-sm text-blue-400 cursor-pointer hover:text-blue-300">View Transcript</summary>
+                            <p className="text-sm text-slate-400 mt-2 p-3 bg-slate-900/50 rounded-lg">
+                              {q.transcript}
+                            </p>
+                          </details>
                         )}
                       </div>
-                      <div className="flex gap-4 text-sm">
-                        <span className="text-slate-400">Correctness: <span className="text-white font-medium">{q.correctness || '-'}</span></span>
-                        <span className="text-slate-400">Clarity: <span className="text-white font-medium">{q.clarity || '-'}</span></span>
-                        <span className="text-slate-400">Depth: <span className="text-white font-medium">{q.depth || '-'}</span></span>
-                      </div>
-                      {q.feedback && (
-                        <div className="mt-3 pt-3 border-t border-slate-700/50">
-                          <p className="text-sm text-slate-400">Feedback: <span className="text-white">{q.feedback}</span></p>
-                        </div>
-                      )}
-                      {q.transcript && (
-                        <details className="mt-3">
-                          <summary className="text-sm text-blue-400 cursor-pointer hover:text-blue-300">View Transcript</summary>
-                          <p className="text-sm text-slate-400 mt-2 p-3 bg-slate-900/50 rounded-lg">
-                            {q.transcript}
-                          </p>
-                        </details>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>

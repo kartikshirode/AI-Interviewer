@@ -91,6 +91,14 @@ class Question(Base):
     )
     question_text = Column(Text, nullable=False)
     source = Column(String, default="system")
+    # Phase 1: per-question rubric anchoring. Travels with the question
+    # into the interview so the evaluator doesn't have to re-fetch from
+    # `question_bank` at scoring time. Shape:
+    #   {"key_concepts": ["...", "..."],
+    #    "anchors": {"0": "...", "1": "...", "2": "...", "3": "...", "4": "..."}}
+    # `None` for questions generated before this column existed (legacy
+    # path — evaluator falls back to the generic prompt).
+    rubric_json = Column(JSON, nullable=True, default=None)
     created_at = Column(DateTime, default=_utcnow)
 
     interview = relationship("Interview", back_populates="questions")
@@ -139,10 +147,23 @@ class Answer(Base):
     whisper_transcript = Column(Text, nullable=True)   # high-accuracy Whisper transcript
     audio_path = Column(String, nullable=True)         # recorded audio file path
     video_path = Column(String, nullable=True)
+    # Legacy 0-10 scalars retained nullable for back-compat with answers
+    # evaluated before Phase 1's rubric anchoring landed. New evaluations
+    # leave these `None` and write `rubric_score` / `rubric_justification`
+    # / `missing_concepts` instead.
     correctness = Column(Float, nullable=True)
     clarity = Column(Float, nullable=True)
     depth = Column(Float, nullable=True)
     confidence_score = Column(Float, nullable=True)
+    # Phase 1 rubric-anchored evaluation:
+    #   rubric_score: 0-4 anchored to the question's rubric.anchors
+    #   rubric_justification: one-sentence why for the chosen anchor
+    #   missing_concepts: list[str] of rubric.key_concepts the candidate
+    #     did not address (drives recruiter feedback and downstream
+    #     follow-up questions).
+    rubric_score = Column(Float, nullable=True)
+    rubric_justification = Column(Text, nullable=True)
+    missing_concepts = Column(JSON, nullable=True)
     feedback = Column(Text, nullable=True)
     is_flagged = Column(Boolean, default=False)
     flag_reason = Column(String, nullable=True)
@@ -217,6 +238,12 @@ class QuestionBank(Base):
     # downstream training. Not part of the lookup key.
     skills_json = Column(JSON, nullable=False, default=list)
     question_text = Column(Text, nullable=False)
+    # Phase 1: rubric stored alongside the question so evaluator calls
+    # don't need to re-derive it. Same shape as `Question.rubric_json`.
+    # Bank rows generated before Phase 1 leave this `None`; the resolver
+    # plumbs `None` through and the evaluator falls back to its legacy
+    # generic prompt.
+    rubric_json = Column(JSON, nullable=True, default=None)
     # Provenance: "gemini" / "static" / "manual". Helps later when training a
     # smart retriever — we'll want to weight manually-curated questions higher.
     source = Column(String, default="gemini")

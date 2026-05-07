@@ -37,25 +37,31 @@ def test_calculate_final_score_empty_returns_none():
 
 
 def test_calculate_final_score_single_answer():
-    """Phase 0.1: final_score = unweighted mean of correctness/clarity/depth
-    × 10. No confidence / communication weighting anymore."""
+    """Phase 1: final_score = mean(rubric_score) × 25. A single 3/4 answer
+    becomes a 75 on the 0-100 scale."""
+    res = evaluation_service.calculate_final_score([{"rubric_score": 3}])
+    assert res is not None
+    assert res["final_score"] == 75.0
+    assert res["technical_score"] == 75.0  # alias for back-compat
+    assert res["mean_rubric_score"] == 3.0
+    assert res["total_questions"] == 1
+
+
+def test_calculate_final_score_skips_unscored_answers():
+    """Phase 1: answers without a rubric_score (failed evaluation) are
+    skipped, not counted as 0. Two scored + one None → mean over the two."""
     res = evaluation_service.calculate_final_score(
-        [{"correctness": 8, "clarity": 9, "depth": 7}]
+        [{"rubric_score": 4}, {"rubric_score": 2}, {"rubric_score": None}]
     )
     assert res is not None
-    # mean(8, 9, 7) * 10 = 80
-    assert res["final_score"] == 80.0
-    # technical_score is kept as an alias of final_score for back-compat.
-    assert res["technical_score"] == 80.0
-    assert res["total_questions"] == 1
+    assert res["mean_rubric_score"] == 3.0
+    assert res["total_questions"] == 2
 
 
 def test_calculate_final_score_no_confidence_in_output():
     """Phase 0.1 invariant: the result dict must not surface any
     confidence / communication / delivery field — those were removed."""
-    res = evaluation_service.calculate_final_score(
-        [{"correctness": 5, "clarity": 5, "depth": 5}]
-    )
+    res = evaluation_service.calculate_final_score([{"rubric_score": 2}])
     assert res is not None
     forbidden = {"confidence", "confidence_score", "communication_score", "communication"}
     assert forbidden.isdisjoint(res.keys()), f"Leaked keys: {forbidden & res.keys()}"
