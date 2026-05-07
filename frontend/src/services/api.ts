@@ -185,6 +185,12 @@ class ApiService {
     });
   }
 
+  async getSampleQuestions(topicId: number) {
+    return this.request<{ topic_id: number; topic_name: string; questions: string[] }>(
+      `/interviews/sample-questions/${topicId}`,
+    );
+  }
+
   // Candidate Interview
   async getInterviewByLink(interviewLink: string) {
     return this.request(`/candidate/interview/${interviewLink}`);

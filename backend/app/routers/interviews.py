@@ -242,6 +242,26 @@ def add_custom_question(
     return db_question
 
 
+@router.get("/sample-questions/{topic_id}")
+def get_sample_questions_for_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    recruiter: Recruiter = Depends(get_current_recruiter),
+):
+    """Preview the canned questions that get attached when a topic is
+    selected during interview creation. Returns an empty list if the topic
+    has no preset bank."""
+    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    questions = SAMPLE_QUESTIONS.get(str(topic.name), [])
+    return {
+        "topic_id": topic.id,
+        "topic_name": topic.name,
+        "questions": questions,
+    }
+
+
 @router.get("/{interview_id}/candidates", response_model=List[CandidateSummary])
 def get_interview_candidates(
     interview_id: int,

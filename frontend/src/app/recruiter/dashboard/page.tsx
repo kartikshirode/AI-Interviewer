@@ -33,6 +33,8 @@ export default function RecruiterDashboard() {
   const [numQuestions, setNumQuestions] = useState(5);
   const [selectedTopics, setSelectedTopics] = useState<number[]>([]);
   const [customQuestions, setCustomQuestions] = useState<string[]>(['']);
+  // Cached preview of canned questions per topic. Fetched lazily on selection.
+  const [sampleQuestions, setSampleQuestions] = useState<Record<number, string[]>>({});
 
   useEffect(() => {
     const token = api.getToken();
@@ -55,6 +57,23 @@ export default function RecruiterDashboard() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleTopic = async (topicId: number) => {
+    if (selectedTopics.includes(topicId)) {
+      setSelectedTopics(selectedTopics.filter((id) => id !== topicId));
+      return;
+    }
+    setSelectedTopics([...selectedTopics, topicId]);
+    if (!sampleQuestions[topicId]) {
+      try {
+        const data = await api.getSampleQuestions(topicId);
+        setSampleQuestions((prev) => ({ ...prev, [topicId]: data.questions }));
+      } catch (err) {
+        console.error('Failed to load sample questions for topic', topicId, err);
+        setSampleQuestions((prev) => ({ ...prev, [topicId]: [] }));
+      }
     }
   };
 
@@ -210,13 +229,7 @@ export default function RecruiterDashboard() {
                     <button
                       key={topic.id}
                       type="button"
-                      onClick={() => {
-                        if (selectedTopics.includes(topic.id)) {
-                          setSelectedTopics(selectedTopics.filter(id => id !== topic.id));
-                        } else {
-                          setSelectedTopics([...selectedTopics, topic.id]);
-                        }
-                      }}
+                      onClick={() => toggleTopic(topic.id)}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
                         selectedTopics.includes(topic.id)
                           ? 'bg-blue-500/20 text-blue-400 border border-blue-500/50'
@@ -227,8 +240,46 @@ export default function RecruiterDashboard() {
                     </button>
                   ))}
                 </div>
+
+                {selectedTopics.length > 0 && (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-xs uppercase tracking-wider text-slate-500">
+                      Preset questions included
+                    </p>
+                    {selectedTopics.map((topicId) => {
+                      const topic = topics.find((t) => t.id === topicId);
+                      const questions = sampleQuestions[topicId];
+                      return (
+                        <div
+                          key={topicId}
+                          className="bg-slate-900/40 border border-slate-700/50 rounded-xl p-4"
+                        >
+                          <div className="text-sm font-semibold text-blue-400 mb-2">
+                            {topic?.name || `Topic ${topicId}`}
+                          </div>
+                          {questions === undefined ? (
+                            <div className="text-sm text-slate-500">Loading…</div>
+                          ) : questions.length === 0 ? (
+                            <div className="text-sm text-slate-500 italic">
+                              No preset questions for this topic — only your custom questions will be used.
+                            </div>
+                          ) : (
+                            <ol className="list-decimal list-inside space-y-1 text-sm text-slate-300">
+                              {questions.map((q, idx) => (
+                                <li key={idx}>{q}</li>
+                              ))}
+                            </ol>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <p className="text-xs text-slate-500">
+                      You&apos;ll get up to {numQuestions} questions distributed across your selected topics. Add custom questions below to extend the bank.
+                    </p>
+                  </div>
+                )}
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-3">Custom Questions (Optional)</label>
                 <div className="space-y-2">
