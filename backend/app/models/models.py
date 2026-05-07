@@ -91,6 +91,17 @@ class Question(Base):
     )
     question_text = Column(Text, nullable=False)
     source = Column(String, default="system")
+    # Phase 2.4: content-side follow-up. When set, this question was
+    # generated in response to the candidate's answer to
+    # `parent_question_id` (which lives in the same interview).
+    # `source` is "followup" for these rows. Used to enforce the
+    # "max 1 follow-up per original question" cap.
+    parent_question_id = Column(
+        Integer,
+        ForeignKey("questions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Phase 1: per-question rubric anchoring. Travels with the question
     # into the interview so the evaluator doesn't have to re-fetch from
     # `question_bank` at scoring time. Shape:

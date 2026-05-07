@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     # Upload limits
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50 MB
 
+    # Phase 2.4: content-side follow-up question. When enabled, the
+    # background-transcription task auto-evaluates the answer and, if
+    # `rubric_score >= FOLLOWUP_THRESHOLD`, asks Gemini to generate one
+    # follow-up that anchors to a specific claim in the candidate's
+    # actual answer. The follow-up is persisted as a new Question row
+    # (source="followup") and the frontend polls for it after submit.
+    # Off by default until tested in production with real candidates.
+    # Cost: one extra Gemini call per strong answer; bounded by the cap.
+    ENABLE_FOLLOWUP_QUESTIONS: bool = False
+    FOLLOWUP_THRESHOLD: float = 3.0
+    MAX_FOLLOWUPS_PER_INTERVIEW: int = 3
+
     @field_validator("SECRET_KEY")
     @classmethod
     def _validate_secret_key(cls, v: str) -> str:

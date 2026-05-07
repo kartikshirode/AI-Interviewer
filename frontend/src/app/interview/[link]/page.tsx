@@ -243,14 +243,40 @@ export default function CandidateInterviewPage() {
 
       await api.submitAnswerForm(formData);
 
-      if (currentQuestionIndex < questions.length - 1) {
+      // Phase 2.4: when the backend has ENABLE_FOLLOWUP_QUESTIONS=true,
+      // it may persist a new follow-up Question shortly after our
+      // submit completes (auto-eval + Gemini call run in the background
+      // task). Poll once with a short timeout so a real follow-up has
+      // a chance to slot in before the next pre-rolled question. If
+      // nothing new shows up we just continue normally — the feature is
+      // strictly best-effort.
+      let updatedQuestions = questions;
+      if (interview) {
+        const knownIds = new Set(questions.map((q) => q.id));
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await new Promise((r) => setTimeout(r, 1200));
+          try {
+            const fresh = (await api.getCandidateQuestions(interview.id)) as Question[];
+            const hasNew = fresh.some((q) => !knownIds.has(q.id));
+            if (hasNew) {
+              updatedQuestions = fresh;
+              setQuestions(fresh);
+              break;
+            }
+          } catch {
+            break;
+          }
+        }
+      }
+
+      if (currentQuestionIndex < updatedQuestions.length - 1) {
         const nextIndex = currentQuestionIndex + 1;
         setCurrentQuestionIndex(nextIndex);
         setTimeLeft(120);
 
         // Start next question
         voiceInterview.resetTranscript();
-        await voiceInterview.speakQuestion(questions[nextIndex].question_text);
+        await voiceInterview.speakQuestion(updatedQuestions[nextIndex].question_text);
         voiceInterview.startAnswer();
       } else {
         stopAllMedia();

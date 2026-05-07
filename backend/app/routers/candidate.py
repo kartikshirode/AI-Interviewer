@@ -261,12 +261,110 @@ def start_interview(
     return {"status": "started", "candidate_id": candidate.id}
 
 
+def _maybe_generate_followup(db: Session, answer: Answer) -> None:
+    """Phase 2.4: feature-flagged content-side follow-up.
+
+    Triggered when a strong answer (`rubric_score >= settings.FOLLOWUP_THRESHOLD`)
+    has just been evaluated. We ask Gemini for a single follow-up
+    question anchored to a specific claim in the transcript and
+    persist it as a new `Question` row with `source="followup"` and
+    `parent_question_id` set. Caps:
+      - max one follow-up per original question
+      - max settings.MAX_FOLLOWUPS_PER_INTERVIEW per interview
+    Soft-fails: any error path leaves the interview unchanged.
+    """
+    from app.core.config import settings as _settings
+
+    if not _settings.ENABLE_FOLLOWUP_QUESTIONS:
+        return
+    if answer.rubric_score is None or answer.rubric_score < _settings.FOLLOWUP_THRESHOLD:
+        return
+
+    original = (
+        db.query(Question).filter(Question.id == answer.question_id).first()
+    )
+    if original is None or original.source == "followup":
+        # Don't generate follow-ups of follow-ups.
+        return
+
+    # Cap 1: one follow-up per original question.
+    already_followed = (
+        db.query(Question)
+        .filter(Question.parent_question_id == original.id)
+        .first()
+    )
+    if already_followed is not None:
+        return
+
+    # Cap 2: max-per-interview.
+    interview_followup_count = (
+        db.query(Question)
+        .filter(
+            Question.interview_id == original.interview_id,
+            Question.source == "followup",
+        )
+        .count()
+    )
+    if interview_followup_count >= _settings.MAX_FOLLOWUPS_PER_INTERVIEW:
+        return
+
+    transcript = answer.whisper_transcript or answer.transcript or ""
+    if not transcript.strip():
+        return
+
+    candidate = (
+        db.query(Candidate).filter(Candidate.id == answer.candidate_id).first()
+    )
+    interview = (
+        db.query(Interview).filter(Interview.id == candidate.interview_id).first()
+        if candidate
+        else None
+    )
+    difficulty = interview.difficulty if interview else "medium"
+    topic_name: Optional[str] = None
+    if original.topic_id:
+        t = db.query(Topic).filter(Topic.id == original.topic_id).first()
+        topic_name = t.name if t else None
+
+    from app.services.question_generator import QuestionGenerator
+    from app.routers.interviews import _get_generator
+
+    pair = _get_generator().generate_followup(
+        question=original.question_text,
+        transcript=transcript,
+        rubric=original.rubric_json,
+        topic=topic_name,
+        difficulty=difficulty,
+    )
+    if pair is None:
+        return
+
+    text, rubric = pair
+    db.add(
+        Question(
+            interview_id=original.interview_id,
+            topic_id=original.topic_id,
+            question_text=text,
+            rubric_json=rubric,
+            source="followup",
+            parent_question_id=original.id,
+        )
+    )
+    db.commit()
+
+
 def _transcribe_audio_background(answer_id: int, audio_path: str):
     """Background task: run Whisper on recorded audio and update the answer.
 
     Failures are logged and persisted onto `Answer.flag_reason` so the
     recruiter sees that transcription couldn't run, instead of silently
     leaving `whisper_transcript = NULL` and pretending nothing happened.
+
+    Phase 2.4: when ENABLE_FOLLOWUP_QUESTIONS is set, this task ALSO
+    auto-evaluates the answer against the question's rubric and, on a
+    strong score, generates a follow-up question. The auto-eval path
+    runs only when the flag is on — recruiter-triggered evaluation is
+    still the primary scoring path otherwise.
     """
     from app.core.database import SessionLocal
     from app.services.speech_service import speech_service
@@ -301,6 +399,67 @@ def _transcribe_audio_background(answer_id: int, audio_path: str):
             # Whisper returned empty — likely silence or unreadable audio.
             answer.flag_reason = "transcription_empty"
         db.commit()
+
+        # Phase 2.4 auto-eval + follow-up. Behind the feature flag so
+        # the existing recruiter-triggered evaluation path stays the
+        # default. Any failure here is non-fatal — the transcript is
+        # already persisted.
+        from app.core.config import settings as _settings
+
+        if _settings.ENABLE_FOLLOWUP_QUESTIONS and answer.whisper_transcript:
+            try:
+                from app.services.evaluation_service import evaluation_service
+
+                question = (
+                    db.query(Question).filter(Question.id == answer.question_id).first()
+                )
+                if question is not None:
+                    candidate = (
+                        db.query(Candidate)
+                        .filter(Candidate.id == answer.candidate_id)
+                        .first()
+                    )
+                    interview = (
+                        db.query(Interview)
+                        .filter(Interview.id == candidate.interview_id)
+                        .first()
+                        if candidate
+                        else None
+                    )
+                    topic_name: Optional[str] = None
+                    if question.topic_id:
+                        t = (
+                            db.query(Topic)
+                            .filter(Topic.id == question.topic_id)
+                            .first()
+                        )
+                        topic_name = t.name if t else None
+                    evaluation = evaluation_service.evaluate_answer(
+                        question=question.question_text,
+                        transcript=answer.whisper_transcript,
+                        difficulty=interview.difficulty if interview else "medium",
+                        topic=topic_name,
+                        rubric=question.rubric_json,
+                    )
+                    if evaluation.get("_ok"):
+                        answer.rubric_score = evaluation.get("rubric_score")
+                        answer.rubric_justification = (
+                            evaluation.get("justification") or None
+                        )
+                        answer.missing_concepts = (
+                            evaluation.get("missing_concepts") or None
+                        )
+                        if evaluation.get("_legacy"):
+                            answer.correctness = evaluation.get("correctness")
+                            answer.clarity = evaluation.get("clarity")
+                            answer.depth = evaluation.get("depth")
+                        db.commit()
+                        _maybe_generate_followup(db, answer)
+            except Exception:
+                logger.exception(
+                    "Phase 2.4 auto-eval / follow-up failed for answer %s",
+                    answer_id,
+                )
     except Exception:
         logger.exception(
             "Unexpected error in background transcription for answer %s", answer_id

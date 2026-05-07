@@ -199,6 +199,108 @@ class QuestionGenerator:
                 pairs.append((q, rubric))
         return pairs or None
 
+    # ── Phase 2.4: content-side follow-up ─────────────────────────────
+
+    def generate_followup(
+        self,
+        question: str,
+        transcript: str,
+        rubric: Optional[dict],
+        topic: Optional[str],
+        difficulty: str,
+    ) -> Optional[QuestionWithRubric]:
+        """Generate a single follow-up question anchored to a concrete
+        claim in the candidate's actual answer.
+
+        This is the only signal that genuinely defeats Cluely-class
+        tools — a generic LLM has no continuity with the candidate's
+        claimed history, so a question of the form "you said X about Y;
+        walk me through Z" exposes them. Returns None on any failure
+        (no API key, exception, malformed response); the caller must
+        treat None as "skip the follow-up, continue normally".
+        """
+        if self._model is None:
+            return None
+        prompt = self._build_followup_prompt(
+            question=question,
+            transcript=transcript,
+            rubric=rubric,
+            topic=topic,
+            difficulty=difficulty,
+        )
+        try:
+            response = self._model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"},
+            )
+        except Exception:
+            logger.exception("Gemini follow-up generation failed")
+            return None
+        text = getattr(response, "text", None) or ""
+        # Expect a single object (not an array) for the follow-up.
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = _FENCE_RE.sub("", cleaned).strip()
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Last-ditch: extract the first {...} block, same as the
+            # array parser does.
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start == -1 or end <= start:
+                return None
+            try:
+                parsed = json.loads(cleaned[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(parsed, dict):
+            return None
+        q = str(parsed.get("question") or "").strip()
+        if not q:
+            return None
+        return (q, _validate_rubric(parsed.get("rubric")))
+
+    @staticmethod
+    def _build_followup_prompt(
+        question: str,
+        transcript: str,
+        rubric: Optional[dict],
+        topic: Optional[str],
+        difficulty: str,
+    ) -> str:
+        rubric_block = ""
+        if rubric and isinstance(rubric, dict):
+            concepts = ", ".join(rubric.get("key_concepts", []) or [])
+            if concepts:
+                rubric_block = (
+                    f"\nThe original question's rubric expected coverage of: "
+                    f"{concepts}.\n"
+                )
+        topic_line = f"Topic: {topic}\n" if topic else ""
+        return (
+            "You are an interviewer designing ONE follow-up question that "
+            "anchors to a specific, concrete claim in the candidate's "
+            "actual answer. The point of this follow-up is to expose "
+            "candidates who answered the original question with help "
+            "from a tool that has no continuity with their actual "
+            "history or thinking. Refer to a specific noun, number, or "
+            "claim from the candidate's transcript. Do NOT generate a "
+            "generic 'tell me more' or 'can you elaborate' question.\n\n"
+            f"Original question: {question}\n"
+            f"Difficulty: {difficulty}\n"
+            f"{topic_line}{rubric_block}\n"
+            f"Candidate's answer:\n{transcript}\n\n"
+            "Produce a JSON object with this exact shape:\n"
+            "{\n"
+            '  "question": "<one-sentence follow-up referencing a specific '
+            'phrase from the candidate\'s answer>",\n'
+            '  "rubric": {"key_concepts": ["..."], "anchors": '
+            '{"0": "...", "1": "...", "2": "...", "3": "...", "4": "..."}}\n'
+            "}\n"
+            "Return ONLY the JSON — no markdown, no commentary."
+        )
+
     @staticmethod
     def _build_prompt(
         topic_name: str, difficulty: str, skills: List[str], count: int
