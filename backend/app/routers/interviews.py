@@ -1,11 +1,23 @@
+import logging
+import random
 import uuid
-from typing import List
+from datetime import datetime, timezone
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.models.models import Candidate, Interview, Question, Recruiter, Topic
+from app.models.models import (
+    Candidate,
+    Interview,
+    Question,
+    QuestionBank,
+    Recruiter,
+    Topic,
+)
 from app.models.schemas import (
     CandidateSummary,
     InterviewCreate,
@@ -15,6 +27,9 @@ from app.models.schemas import (
 )
 from app.routers.auth import get_current_recruiter
 from app.services.question_generator import QuestionGenerator
+from app.services.skills import normalize_skills_key, normalize_skills_list
+
+logger = logging.getLogger(__name__)
 
 # Question bank stratified by difficulty. The bank for the chosen difficulty
 # is the only one used at interview-creation time; `medium` is also the
@@ -232,22 +247,103 @@ def _get_generator() -> QuestionGenerator:
     return _generator
 
 
-def _questions_for(
+def _persist_to_bank(
+    db: Session,
     topic_name: str,
     difficulty: str,
+    skills_key: str,
+    skills_list: list[str],
+    questions: list[str],
+    source: str,
+) -> None:
+    """Insert generated questions into the QuestionBank, deduping on the
+    (topic, difficulty, skills_key, question_text) unique constraint."""
+    if not questions:
+        return
+    existing = {
+        row.question_text
+        for row in db.query(QuestionBank.question_text)
+        .filter(
+            QuestionBank.topic_name == topic_name,
+            QuestionBank.difficulty == difficulty,
+            QuestionBank.skills_key == skills_key,
+        )
+        .all()
+    }
+    for q in questions:
+        if q in existing:
+            continue
+        try:
+            db.add(
+                QuestionBank(
+                    topic_name=topic_name,
+                    difficulty=difficulty,
+                    skills_key=skills_key,
+                    skills_json=skills_list,
+                    question_text=q,
+                    source=source,
+                )
+            )
+            db.commit()
+        except IntegrityError:
+            # Lost a race with a concurrent writer — fine, the row exists.
+            db.rollback()
+
+
+def _resolve_questions(
+    db: Session,
+    topic_name: str,
+    difficulty: str,
+    skills: list[str],
     count: int = 5,
     force_refresh: bool = False,
-) -> list[str]:
-    """Resolve the question bank for a (topic, difficulty) pair via the
-    dynamic generator (Gemini), with the static SAMPLE_QUESTIONS bank as a
-    fallback. Cached for 30 minutes to avoid hammering the API on previews.
+) -> tuple[list[str], str]:
+    """Resolve N questions for (topic, difficulty, skills) — DB bank first,
+    Gemini on cache miss, static fallback if Gemini is unavailable.
+
+    Returns (questions, source) where source ∈ {"bank-hit", "gemini",
+    "static"}. The bank is the system-of-record for previously-generated
+    questions; this function persists fresh generations on every miss so
+    subsequent requests are token-free.
     """
-    return _get_generator().get_questions(
+    skills_list = normalize_skills_list(skills)
+    skills_key = normalize_skills_key(skills_list)
+
+    if not force_refresh:
+        # Pull a small candidate pool ordered by least-used so the bank
+        # spreads coverage. Random sample within the pool so different
+        # interviews with the same key get different question subsets.
+        pool = (
+            db.query(QuestionBank)
+            .filter(
+                QuestionBank.topic_name == topic_name,
+                QuestionBank.difficulty == difficulty,
+                QuestionBank.skills_key == skills_key,
+            )
+            .order_by(QuestionBank.times_used.asc(), func.random())
+            .limit(max(count * 3, count))
+            .all()
+        )
+        if len(pool) >= count:
+            chosen = random.sample(pool, count)
+            now = datetime.now(timezone.utc)
+            for row in chosen:
+                row.times_used += 1
+                row.last_used_at = now
+            db.commit()
+            return [row.question_text for row in chosen], "bank-hit"
+
+    # Bank short or refresh forced → ask the generator.
+    fresh, source = _get_generator().generate(
         topic_name=topic_name,
         difficulty=difficulty,
+        skills=skills_list,
         count=count,
-        force_refresh=force_refresh,
     )
+    _persist_to_bank(
+        db, topic_name, difficulty, skills_key, skills_list, fresh, source
+    )
+    return fresh[:count], source
 
 router = APIRouter(prefix="/interviews", tags=["Interviews"])
 
@@ -269,11 +365,13 @@ def create_interview(
     recruiter: Recruiter = Depends(get_current_recruiter),
 ):
     interview_link = str(uuid.uuid4())
+    skills_list = normalize_skills_list(interview.skills)
     db_interview = Interview(
         recruiter_id=recruiter.id,
         role=interview.role,
         difficulty=interview.difficulty,
         num_questions=interview.num_questions,
+        skills=skills_list,
         interview_link=interview_link,
         status="active",
     )
@@ -283,23 +381,32 @@ def create_interview(
 
     questions_to_create: List[Question] = []
 
-    # Resolve selected topics in the same order the recruiter sent them so the
-    # distribution is deterministic.
+    # Resolve selected catalog topics in order so distribution is deterministic.
     selected_topics: List[Topic] = []
     for topic_id in interview.topics:
         topic = db.query(Topic).filter(Topic.id == topic_id).first()
         if topic:
             selected_topics.append(topic)
 
-    if selected_topics:
+    # A recruiter may pick "Other" → custom_topic. Treat it as one extra
+    # topic-name slot in the distribution, with no Topic FK on the Question.
+    custom_topic_name = (interview.custom_topic or "").strip()
+
+    bucket_count = len(selected_topics) + (1 if custom_topic_name else 0)
+    if bucket_count > 0:
         per_topic_counts = _distribute_question_count(
-            interview.num_questions, len(selected_topics)
+            interview.num_questions, bucket_count
         )
+
         for topic, take in zip(selected_topics, per_topic_counts):
             if take <= 0:
                 continue
-            sample_pool = _questions_for(
-                str(topic.name), interview.difficulty, count=take
+            sample_pool, _src = _resolve_questions(
+                db,
+                str(topic.name),
+                interview.difficulty,
+                skills_list,
+                count=take,
             )
             for q_text in sample_pool[:take]:
                 questions_to_create.append(
@@ -310,6 +417,26 @@ def create_interview(
                         source="system",
                     )
                 )
+
+        if custom_topic_name:
+            take = per_topic_counts[len(selected_topics)]
+            if take > 0:
+                sample_pool, _src = _resolve_questions(
+                    db,
+                    custom_topic_name,
+                    interview.difficulty,
+                    skills_list,
+                    count=take,
+                )
+                for q_text in sample_pool[:take]:
+                    questions_to_create.append(
+                        Question(
+                            interview_id=db_interview.id,
+                            topic_id=None,  # not in the curated catalog
+                            question_text=q_text,
+                            source="system",
+                        )
+                    )
 
     for q_text in interview.custom_questions:
         questions_to_create.append(
@@ -425,25 +552,63 @@ def get_sample_questions_for_topic(
     difficulty: str = "medium",
     count: int = 5,
     regenerate: bool = False,
+    skills: List[str] = Query(default_factory=list),
     db: Session = Depends(get_db),
     recruiter: Recruiter = Depends(get_current_recruiter),
 ):
-    """Preview the questions that will be attached to a new interview for
-    this (topic, difficulty). Calls Gemini for a fresh set on the first
-    request, then serves from a 30-minute cache. Pass `regenerate=true` to
-    bust the cache and force a new LLM call. Falls back to a static bank
-    when Gemini is unavailable.
-    """
+    """Preview the questions that will be attached for a curated topic.
+    Bank-first lookup keyed on (topic, difficulty, skills); calls Gemini
+    only when the bank is short or `regenerate=true`."""
     topic = db.query(Topic).filter(Topic.id == topic_id).first()
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-    questions = _questions_for(
-        str(topic.name), difficulty, count=count, force_refresh=regenerate
+    questions, source = _resolve_questions(
+        db,
+        str(topic.name),
+        difficulty,
+        skills,
+        count=count,
+        force_refresh=regenerate,
     )
     return {
         "topic_id": topic.id,
         "topic_name": topic.name,
         "difficulty": difficulty,
+        "skills": skills,
+        "source": source,
+        "questions": questions,
+    }
+
+
+@router.get("/sample-questions/by-name/{topic_name}")
+def get_sample_questions_for_custom_topic(
+    topic_name: str,
+    difficulty: str = "medium",
+    count: int = 5,
+    regenerate: bool = False,
+    skills: List[str] = Query(default_factory=list),
+    db: Session = Depends(get_db),
+    recruiter: Recruiter = Depends(get_current_recruiter),
+):
+    """Preview endpoint for a custom ("Other") topic that isn't in the
+    curated catalog. Same bank-first behavior as the by-id variant."""
+    topic_name = topic_name.strip()
+    if not topic_name:
+        raise HTTPException(status_code=400, detail="topic_name is required")
+    questions, source = _resolve_questions(
+        db,
+        topic_name,
+        difficulty,
+        skills,
+        count=count,
+        force_refresh=regenerate,
+    )
+    return {
+        "topic_id": None,
+        "topic_name": topic_name,
+        "difficulty": difficulty,
+        "skills": skills,
+        "source": source,
         "questions": questions,
     }
 

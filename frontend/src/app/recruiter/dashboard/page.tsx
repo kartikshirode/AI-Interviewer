@@ -19,7 +19,11 @@ interface Topic {
   id: number;
   name: string;
   description?: string;
+  skills?: string[];
 }
+
+// Sentinel id for the "Other" custom-topic chip. Real topic ids are positive.
+const CUSTOM_TOPIC_KEY = -1;
 
 export default function RecruiterDashboard() {
   const router = useRouter();
@@ -33,9 +37,16 @@ export default function RecruiterDashboard() {
   const [numQuestions, setNumQuestions] = useState(5);
   const [selectedTopics, setSelectedTopics] = useState<number[]>([]);
   const [customQuestions, setCustomQuestions] = useState<string[]>(['']);
-  // Cached preview of canned questions per topic. Fetched lazily on selection.
+  // Skills picked per topic. Keyed by topic id (or CUSTOM_TOPIC_KEY).
+  const [skillsByTopic, setSkillsByTopic] = useState<Record<number, string[]>>({});
+  // Soft skills list fetched once from the backend.
+  const [generalSkills, setGeneralSkills] = useState<string[]>([]);
+  // Custom-topic ("Other") inputs.
+  const [customTopicName, setCustomTopicName] = useState('');
+  const [customSkillInput, setCustomSkillInput] = useState('');
+  // Cached preview of generated questions, keyed by topic id (or sentinel).
   const [sampleQuestions, setSampleQuestions] = useState<Record<number, string[]>>({});
-  // Per-topic loading flag while we wait for the dynamic generator.
+  const [previewSource, setPreviewSource] = useState<Record<number, string>>({});
   const [loadingTopics, setLoadingTopics] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
@@ -49,12 +60,14 @@ export default function RecruiterDashboard() {
 
   const loadData = async () => {
     try {
-      const [interviewsData, topicsData] = await Promise.all([
+      const [interviewsData, topicsData, generalSkillsData] = await Promise.all([
         api.getInterviews(),
-        api.getTopics()
+        api.getTopics(),
+        api.getGeneralSkills(),
       ]);
       setInterviews(interviewsData as Interview[]);
       setTopics(topicsData as Topic[]);
+      setGeneralSkills(generalSkillsData);
     } catch (err) {
       console.error(err);
     } finally {
@@ -63,64 +76,123 @@ export default function RecruiterDashboard() {
   };
 
   const fetchSampleQuestions = async (
-    topicId: number,
+    topicKey: number,
     diff: string,
     regenerate = false,
   ) => {
-    setLoadingTopics((prev) => ({ ...prev, [topicId]: true }));
+    setLoadingTopics((prev) => ({ ...prev, [topicKey]: true }));
     try {
-      const data = await api.getSampleQuestions(topicId, diff, {
-        count: numQuestions,
-        regenerate,
-      });
-      setSampleQuestions((prev) => ({ ...prev, [topicId]: data.questions }));
+      const skills = skillsByTopic[topicKey] ?? [];
+      const data =
+        topicKey === CUSTOM_TOPIC_KEY
+          ? customTopicName.trim()
+            ? await api.getSampleQuestionsForCustomTopic(
+                customTopicName.trim(),
+                diff,
+                { count: numQuestions, regenerate, skills },
+              )
+            : null
+          : await api.getSampleQuestions(topicKey, diff, {
+              count: numQuestions,
+              regenerate,
+              skills,
+            });
+      if (data) {
+        setSampleQuestions((prev) => ({ ...prev, [topicKey]: data.questions }));
+        setPreviewSource((prev) => ({ ...prev, [topicKey]: data.source }));
+      }
     } catch (err) {
-      console.error('Failed to load sample questions for topic', topicId, err);
-      setSampleQuestions((prev) => ({ ...prev, [topicId]: [] }));
+      console.error('Failed to load sample questions for topic', topicKey, err);
+      setSampleQuestions((prev) => ({ ...prev, [topicKey]: [] }));
     } finally {
-      setLoadingTopics((prev) => ({ ...prev, [topicId]: false }));
+      setLoadingTopics((prev) => ({ ...prev, [topicKey]: false }));
     }
   };
 
-  const toggleTopic = async (topicId: number) => {
-    if (selectedTopics.includes(topicId)) {
-      setSelectedTopics(selectedTopics.filter((id) => id !== topicId));
+  const toggleTopic = async (topicKey: number) => {
+    if (selectedTopics.includes(topicKey)) {
+      setSelectedTopics(selectedTopics.filter((id) => id !== topicKey));
       return;
     }
-    setSelectedTopics([...selectedTopics, topicId]);
-    if (!sampleQuestions[topicId]) {
-      await fetchSampleQuestions(topicId, difficulty);
+    setSelectedTopics([...selectedTopics, topicKey]);
+    if (topicKey === CUSTOM_TOPIC_KEY) {
+      // Don't fetch until the recruiter types a topic name.
+      return;
+    }
+    if (!sampleQuestions[topicKey]) {
+      await fetchSampleQuestions(topicKey, difficulty);
     }
   };
 
-  // When difficulty changes, refetch previews for every selected topic so
-  // what the user sees matches what'll actually be saved.
+  const toggleSkill = (topicKey: number, skill: string) => {
+    setSkillsByTopic((prev) => {
+      const current = prev[topicKey] ?? [];
+      const next = current.includes(skill)
+        ? current.filter((s) => s !== skill)
+        : [...current, skill];
+      return { ...prev, [topicKey]: next };
+    });
+  };
+
+  // When skills change for a topic, the bank lookup key changes — refetch.
+  // Debounced via the dependency array; this fires after any toggle.
   useEffect(() => {
     if (selectedTopics.length === 0) return;
-    setSampleQuestions({});
-    selectedTopics.forEach((id) => fetchSampleQuestions(id, difficulty));
+    selectedTopics.forEach((key) => {
+      if (key === CUSTOM_TOPIC_KEY && !customTopicName.trim()) return;
+      fetchSampleQuestions(key, difficulty);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [difficulty]);
+  }, [difficulty, skillsByTopic, customTopicName]);
 
   const handleCreateInterview = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const filteredCustomQuestions = customQuestions.filter(q => q.trim() !== '');
+      // Flatten per-topic skills into one list. The backend only stores
+      // one Interview.skills per interview — driving every (topic, skills)
+      // bank lookup off the same set keeps it predictable.
+      const skillSet = new Set<string>();
+      for (const key of selectedTopics) {
+        for (const s of skillsByTopic[key] ?? []) skillSet.add(s);
+      }
+      const wantsCustomTopic = selectedTopics.includes(CUSTOM_TOPIC_KEY);
+      const realTopicIds = selectedTopics.filter((id) => id !== CUSTOM_TOPIC_KEY);
       await api.createInterview({
         role,
         difficulty,
         num_questions: numQuestions,
-        topics: selectedTopics,
-        custom_questions: filteredCustomQuestions
+        topics: realTopicIds,
+        custom_questions: filteredCustomQuestions,
+        skills: Array.from(skillSet),
+        custom_topic: wantsCustomTopic && customTopicName.trim() ? customTopicName.trim() : null,
       });
       setShowCreate(false);
       setRole('');
       setSelectedTopics([]);
+      setSkillsByTopic({});
+      setCustomTopicName('');
+      setCustomSkillInput('');
       setCustomQuestions(['']);
+      setSampleQuestions({});
+      setPreviewSource({});
       loadData();
-    } catch (err: any) {
-      alert(err.message);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to create interview');
     }
+  };
+
+  const addCustomSkill = () => {
+    const trimmed = customSkillInput.trim();
+    if (!trimmed) return;
+    const current = skillsByTopic[CUSTOM_TOPIC_KEY] ?? [];
+    if (!current.includes(trimmed)) {
+      setSkillsByTopic((prev) => ({
+        ...prev,
+        [CUSTOM_TOPIC_KEY]: [...current, trimmed],
+      }));
+    }
+    setCustomSkillInput('');
   };
 
   const handleLogout = () => {
@@ -264,36 +336,145 @@ export default function RecruiterDashboard() {
                       {topic.name}
                     </button>
                   ))}
+                  <button
+                    key="other-topic"
+                    type="button"
+                    onClick={() => toggleTopic(CUSTOM_TOPIC_KEY)}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition border-dashed ${
+                      selectedTopics.includes(CUSTOM_TOPIC_KEY)
+                        ? 'bg-purple-500/20 text-purple-300 border border-purple-500/50'
+                        : 'bg-slate-700/30 text-slate-400 border border-slate-600 hover:border-slate-500'
+                    }`}
+                  >
+                    + Other
+                  </button>
                 </div>
 
                 {selectedTopics.length > 0 && (
-                  <div className="mt-4 space-y-3">
-                    <p className="text-xs uppercase tracking-wider text-slate-500">
-                      AI-generated questions for {difficulty} difficulty
-                    </p>
-                    {selectedTopics.map((topicId) => {
-                      const topic = topics.find((t) => t.id === topicId);
-                      const questions = sampleQuestions[topicId];
-                      const isLoading = loadingTopics[topicId];
+                  <div className="mt-4 space-y-4">
+                    {selectedTopics.map((topicKey) => {
+                      const isCustom = topicKey === CUSTOM_TOPIC_KEY;
+                      const topic = isCustom ? null : topics.find((t) => t.id === topicKey);
+                      const topicSpecificSkills = isCustom ? [] : (topic?.skills ?? []);
+                      const skillsForTopic = skillsByTopic[topicKey] ?? [];
+                      const questions = sampleQuestions[topicKey];
+                      const isLoading = loadingTopics[topicKey];
+                      const source = previewSource[topicKey];
+                      const titleText = isCustom
+                        ? (customTopicName.trim() || 'Custom topic')
+                        : (topic?.name || `Topic ${topicKey}`);
+                      const canRegenerate =
+                        !isCustom || customTopicName.trim().length > 0;
+
                       return (
                         <div
-                          key={topicId}
-                          className="bg-slate-900/40 border border-slate-700/50 rounded-xl p-4"
+                          key={topicKey}
+                          className="bg-slate-900/40 border border-slate-700/50 rounded-xl p-4 space-y-3"
                         >
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="text-sm font-semibold text-blue-400">
-                              {topic?.name || `Topic ${topicId}`}
+                          <div className="flex items-center justify-between">
+                            <div className={`text-sm font-semibold ${isCustom ? 'text-purple-300' : 'text-blue-400'}`}>
+                              {titleText}
+                              {source && (
+                                <span className="ml-2 text-[10px] uppercase tracking-wider text-slate-500">
+                                  {source === 'bank-hit' ? 'from bank' : source === 'gemini' ? 'fresh from AI' : source}
+                                </span>
+                              )}
                             </div>
                             <button
                               type="button"
-                              onClick={() => fetchSampleQuestions(topicId, difficulty, true)}
-                              disabled={isLoading}
+                              onClick={() => fetchSampleQuestions(topicKey, difficulty, true)}
+                              disabled={isLoading || !canRegenerate}
                               className="text-xs text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 rounded-md px-2 py-1 transition disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {isLoading ? 'Generating…' : '↻ Regenerate'}
                             </button>
                           </div>
-                          {questions === undefined || isLoading ? (
+
+                          {/* Custom topic name input */}
+                          {isCustom && (
+                            <input
+                              type="text"
+                              value={customTopicName}
+                              onChange={(e) => setCustomTopicName(e.target.value)}
+                              placeholder="e.g., Rust, Kubernetes, Product Management…"
+                              className="w-full px-3 py-2 bg-slate-900/60 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                            />
+                          )}
+
+                          {/* Skills row: topic-specific (or custom skills) + general */}
+                          <div className="space-y-2">
+                            <p className="text-xs uppercase tracking-wider text-slate-500">
+                              {isCustom ? 'Skills' : 'Areas of focus'}
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {(isCustom ? skillsForTopic : topicSpecificSkills).map((s) => (
+                                <button
+                                  key={`topic-skill-${s}`}
+                                  type="button"
+                                  onClick={() =>
+                                    isCustom
+                                      ? setSkillsByTopic((prev) => ({
+                                          ...prev,
+                                          [CUSTOM_TOPIC_KEY]: (prev[CUSTOM_TOPIC_KEY] ?? []).filter((x) => x !== s),
+                                        }))
+                                      : toggleSkill(topicKey, s)
+                                  }
+                                  className={`text-xs px-2 py-1 rounded-md border transition ${
+                                    isCustom || skillsForTopic.includes(s)
+                                      ? 'bg-blue-500/20 text-blue-300 border-blue-500/50'
+                                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500'
+                                  }`}
+                                >
+                                  {s}
+                                  {isCustom && <span className="ml-1 text-slate-500">×</span>}
+                                </button>
+                              ))}
+
+                              {/* Custom skills inline input (only for "Other") */}
+                              {isCustom && (
+                                <input
+                                  type="text"
+                                  value={customSkillInput}
+                                  onChange={(e) => setCustomSkillInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ',') {
+                                      e.preventDefault();
+                                      addCustomSkill();
+                                    }
+                                  }}
+                                  onBlur={addCustomSkill}
+                                  placeholder="add skill, press Enter…"
+                                  className="text-xs px-2 py-1 bg-slate-800 border border-slate-700 rounded-md text-white placeholder-slate-500 outline-none focus:border-purple-500 min-w-[10rem]"
+                                />
+                              )}
+                            </div>
+
+                            {/* General skills — same row, marked with star */}
+                            <div className="flex flex-wrap gap-1.5">
+                              {generalSkills.map((s) => (
+                                <button
+                                  key={`gen-skill-${topicKey}-${s}`}
+                                  type="button"
+                                  onClick={() => toggleSkill(topicKey, s)}
+                                  className={`text-xs px-2 py-1 rounded-md border transition ${
+                                    skillsForTopic.includes(s)
+                                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500'
+                                  }`}
+                                  title="General skill — applies to any role"
+                                >
+                                  ★ {s}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Generated-question preview */}
+                          {(isCustom && !customTopicName.trim()) ? (
+                            <div className="text-sm text-slate-500 italic">
+                              Type a topic name above to generate questions.
+                            </div>
+                          ) : questions === undefined || isLoading ? (
                             <div className="text-sm text-slate-500">Generating questions…</div>
                           ) : questions.length === 0 ? (
                             <div className="text-sm text-slate-500 italic">
@@ -310,7 +491,7 @@ export default function RecruiterDashboard() {
                       );
                     })}
                     <p className="text-xs text-slate-500">
-                      Questions are generated by AI for the chosen difficulty and cached for 30 minutes — &ldquo;Regenerate&rdquo; forces a fresh set. You&apos;ll get up to {numQuestions} questions distributed across your selected topics.
+                      Generated questions are saved to a shared bank — repeat selections reuse stored questions instead of calling the AI. &ldquo;Regenerate&rdquo; forces a fresh AI call. You&apos;ll get up to {numQuestions} questions distributed across your selected topics.
                     </p>
                   </div>
                 )}

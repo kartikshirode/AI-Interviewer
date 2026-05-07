@@ -7,6 +7,8 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     Boolean,
+    Index,
+    JSON,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -40,6 +42,9 @@ class Topic(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True, nullable=False)
     description = Column(String)
+    # Curated skill catalog for this topic. Surfaced in the create-interview UI
+    # alongside `GENERAL_SKILLS` (services/skills.py).
+    skills = Column(JSON, nullable=False, default=list)
 
     questions = relationship("Question", back_populates="topic")
 
@@ -56,6 +61,9 @@ class Interview(Base):
     num_questions = Column(Integer, default=5)
     interview_link = Column(String, unique=True, index=True)
     status = Column(String, default="draft")
+    # Free-text skill tags chosen by the recruiter at creation time.
+    # Drives the question-bank lookup key and shows up in the report.
+    skills = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime, default=_utcnow)
     expires_at = Column(DateTime, nullable=True)
 
@@ -145,4 +153,54 @@ class Answer(Base):
 
     __table_args__ = (
         UniqueConstraint("candidate_id", "question_id", name="uq_answer_candidate_question"),
+    )
+
+
+class QuestionBank(Base):
+    """Persistent, reusable question pool keyed by (topic, difficulty, skills).
+
+    Populated lazily: when an interview-creation flow needs questions for a
+    (topic_name, difficulty, skills_key) tuple and the bank is short, the
+    deficit is generated via Gemini and inserted here. Subsequent requests
+    for the same key are served from the bank — random sample weighted by
+    `times_used` ascending — so we don't burn API tokens on every preview.
+
+    `topic_name` is a string, not an FK to `topics.id`, so questions for
+    custom "Other" topics that aren't in the curated catalog still persist.
+    """
+
+    __tablename__ = "question_bank"
+
+    id = Column(Integer, primary_key=True, index=True)
+    topic_name = Column(String, nullable=False, index=True)
+    difficulty = Column(String(20), nullable=False, index=True)
+    # Normalized lookup key: lowercased, sorted, comma-joined skills. "" when no
+    # skills picked. Indexed because every read filters on it.
+    skills_key = Column(String, nullable=False, default="", index=True)
+    # Original skills list (preserved case / order) for display + potential
+    # downstream training. Not part of the lookup key.
+    skills_json = Column(JSON, nullable=False, default=list)
+    question_text = Column(Text, nullable=False)
+    # Provenance: "gemini" / "static" / "manual". Helps later when training a
+    # smart retriever — we'll want to weight manually-curated questions higher.
+    source = Column(String, default="gemini")
+    times_used = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=_utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "topic_name",
+            "difficulty",
+            "skills_key",
+            "question_text",
+            name="uq_question_bank_dedup",
+        ),
+        Index(
+            "ix_question_bank_lookup",
+            "topic_name",
+            "difficulty",
+            "skills_key",
+            "times_used",
+        ),
     )

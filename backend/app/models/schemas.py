@@ -24,6 +24,7 @@ class RecruiterResponse(RecruiterBase):
 class TopicBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(default=None, max_length=500)
+    skills: List[str] = Field(default_factory=list)
 
 
 class TopicResponse(TopicBase):
@@ -56,11 +57,17 @@ class InterviewBase(BaseModel):
     role: str = Field(..., min_length=1, max_length=200)
     difficulty: str = Field(default="medium", max_length=20)
     num_questions: int = Field(default=5, ge=1, le=50)
+    skills: List[str] = Field(default_factory=list)
 
 
 class InterviewCreate(InterviewBase):
     topics: List[int] = []
     custom_questions: List[str] = []
+    # When the recruiter picks "Other" in the topic dropdown, the topic name
+    # is sent here instead of (or in addition to) `topics`. Questions for this
+    # topic are generated/looked up by name; no Topic row is auto-created so
+    # the catalog stays curated.
+    custom_topic: Optional[str] = Field(default=None, max_length=100)
 
 
 class InterviewResponse(InterviewBase):

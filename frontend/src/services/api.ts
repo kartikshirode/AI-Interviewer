@@ -142,7 +142,15 @@ class ApiService {
   }
 
   // Interviews
-  async createInterview(data: { role: string; difficulty: string; num_questions: number; topics?: number[]; custom_questions?: string[] }) {
+  async createInterview(data: {
+    role: string;
+    difficulty: string;
+    num_questions: number;
+    topics?: number[];
+    custom_questions?: string[];
+    skills?: string[];
+    custom_topic?: string | null;
+  }) {
     return this.request('/interviews/', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -188,16 +196,47 @@ class ApiService {
   async getSampleQuestions(
     topicId: number,
     difficulty: string = 'medium',
-    options: { count?: number; regenerate?: boolean } = {},
+    options: { count?: number; regenerate?: boolean; skills?: string[] } = {},
   ) {
-    const qs = new URLSearchParams({
-      difficulty,
-      count: String(options.count ?? 5),
-      regenerate: options.regenerate ? 'true' : 'false',
-    }).toString();
-    return this.request<{ topic_id: number; topic_name: string; difficulty: string; questions: string[] }>(
-      `/interviews/sample-questions/${topicId}?${qs}`,
+    const params = new URLSearchParams();
+    params.set('difficulty', difficulty);
+    params.set('count', String(options.count ?? 5));
+    params.set('regenerate', options.regenerate ? 'true' : 'false');
+    for (const s of options.skills ?? []) params.append('skills', s);
+    return this.request<{
+      topic_id: number | null;
+      topic_name: string;
+      difficulty: string;
+      skills: string[];
+      source: string;
+      questions: string[];
+    }>(`/interviews/sample-questions/${topicId}?${params.toString()}`);
+  }
+
+  async getSampleQuestionsForCustomTopic(
+    topicName: string,
+    difficulty: string = 'medium',
+    options: { count?: number; regenerate?: boolean; skills?: string[] } = {},
+  ) {
+    const params = new URLSearchParams();
+    params.set('difficulty', difficulty);
+    params.set('count', String(options.count ?? 5));
+    params.set('regenerate', options.regenerate ? 'true' : 'false');
+    for (const s of options.skills ?? []) params.append('skills', s);
+    return this.request<{
+      topic_id: number | null;
+      topic_name: string;
+      difficulty: string;
+      skills: string[];
+      source: string;
+      questions: string[];
+    }>(
+      `/interviews/sample-questions/by-name/${encodeURIComponent(topicName)}?${params.toString()}`,
     );
+  }
+
+  async getGeneralSkills() {
+    return this.request<string[]>('/topics/general-skills');
   }
 
   // Candidate Interview
