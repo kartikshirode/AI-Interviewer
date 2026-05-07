@@ -32,20 +32,33 @@ def test_extract_json_returns_none_on_garbage():
 
 def test_calculate_final_score_empty_returns_none():
     """ISSUE-30: empty answers must return None, not score 0."""
-    assert evaluation_service.calculate_final_score([], 7.5) is None
-    assert evaluation_service.calculate_final_score(None, 7.5) is None
+    assert evaluation_service.calculate_final_score([]) is None
+    assert evaluation_service.calculate_final_score(None) is None
 
 
 def test_calculate_final_score_single_answer():
+    """Phase 0.1: final_score = unweighted mean of correctness/clarity/depth
+    × 10. No confidence / communication weighting anymore."""
     res = evaluation_service.calculate_final_score(
-        [{"correctness": 8, "clarity": 9, "depth": 7}], 8.0
+        [{"correctness": 8, "clarity": 9, "depth": 7}]
     )
     assert res is not None
-    # technical = (8+9+7) / 3 * 10 / 1 = 80
+    # mean(8, 9, 7) * 10 = 80
+    assert res["final_score"] == 80.0
+    # technical_score is kept as an alias of final_score for back-compat.
     assert res["technical_score"] == 80.0
-    # final = 80*0.7 + 8*0.3 = 56 + 2.4 = 58.4
-    assert res["final_score"] == 58.4
     assert res["total_questions"] == 1
+
+
+def test_calculate_final_score_no_confidence_in_output():
+    """Phase 0.1 invariant: the result dict must not surface any
+    confidence / communication / delivery field — those were removed."""
+    res = evaluation_service.calculate_final_score(
+        [{"correctness": 5, "clarity": 5, "depth": 5}]
+    )
+    assert res is not None
+    forbidden = {"confidence", "confidence_score", "communication_score", "communication"}
+    assert forbidden.isdisjoint(res.keys()), f"Leaked keys: {forbidden & res.keys()}"
 
 
 def test_distribute_question_count_three_topics_total_five():

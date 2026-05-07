@@ -578,7 +578,8 @@ def evaluate_answer(
     answer.correctness = evaluation["correctness"]
     answer.clarity = evaluation["clarity"]
     answer.depth = evaluation["depth"]
-    answer.confidence_score = evaluation.get("confidence")
+    # `Answer.confidence_score` is intentionally left nullable and unwritten
+    # (Phase 0.1): we no longer score delivery / confidence.
     answer.feedback = evaluation.get("feedback", "")
     db.commit()
 
@@ -640,22 +641,11 @@ def evaluate_candidate(
         answer.correctness = evaluation["correctness"]
         answer.clarity = evaluation["clarity"]
         answer.depth = evaluation["depth"]
-        answer.confidence_score = evaluation.get("confidence")
+        # See evaluate_answer endpoint — confidence_score intentionally unwritten.
         answer.feedback = evaluation.get("feedback", "")
         answer_evaluations.append(evaluation)
 
-    all_transcripts = "\n\n".join(
-        (a.whisper_transcript or a.transcript)
-        for a in answers
-        if (a.whisper_transcript or a.transcript)
-    )
-    comm_eval = evaluation_service.evaluate_communication(
-        all_transcripts, len(answers)
-    )
-
-    final_scores = evaluation_service.calculate_final_score(
-        answer_evaluations, comm_eval["communication_score"]
-    )
+    final_scores = evaluation_service.calculate_final_score(answer_evaluations)
 
     if final_scores is None:
         db.commit()
@@ -665,15 +655,12 @@ def evaluate_candidate(
         )
 
     candidate.final_score = final_scores["final_score"]
-    candidate.communication_score = comm_eval["communication_score"]
     db.commit()
 
     return {
         "final_score": final_scores["final_score"],
         "technical_score": final_scores["technical_score"],
-        "communication_score": final_scores["communication_score"],
         "answer_evaluations": answer_evaluations,
-        "communication_evaluation": comm_eval,
     }
 
 
@@ -811,9 +798,9 @@ def get_candidate_report(
     }
 
     # Use the same formula as evaluation_service.calculate_final_score for
-    # consistency (ISSUE-28).
-    comm_score = candidate.communication_score or 0
-    aggregated = evaluation_service.calculate_final_score(answer_eval_dicts, comm_score)
+    # consistency (ISSUE-28). After Phase 0.1, communication_score is no
+    # longer mixed into the final score; it persists informationally only.
+    aggregated = evaluation_service.calculate_final_score(answer_eval_dicts)
     technical_score = aggregated["technical_score"] if aggregated else None
 
     return {

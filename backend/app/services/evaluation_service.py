@@ -47,19 +47,28 @@ class EvaluationService:
         difficulty: str = "medium",
         topic: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Evaluate a candidate's answer using Gemini."""
+        """Evaluate a candidate's answer using Gemini.
+
+        Scores the *content* of the answer only — not delivery. We
+        deliberately do not ask the model to assess "confidence" or any
+        other prosody-adjacent quality. Delivery scoring biases against
+        accented speakers, neurodivergent candidates, and anxious
+        candidates, has no defensible job-performance correlation, and
+        sits at the centre of the ACLU v. Intuit/HireVue complaint.
+        """
 
         system_prompt = f"""You are an expert technical interviewer evaluating a candidate's answer.
-Evaluate the answer based on:
+Evaluate the answer based on the substance of what was said:
 1. Correctness (0-10): Is the technical content accurate?
 2. Clarity (0-10): Is the explanation clear and well-structured?
 3. Depth (0-10): Does the answer show good understanding of the topic?
-4. Confidence (0-10): Does the candidate sound confident and assertive?
 
-Also compute an overall score (0-100) based on weighted combination:
-- Technical accuracy (correctness + depth): 60%
-- Communication (clarity): 25%
-- Confidence: 15%
+Do NOT score how confident, fluent, assertive, or smooth the candidate sounds.
+Do NOT penalise hesitations, fillers, accents, or non-native phrasing.
+Score only the substance of what was said.
+
+Compute an overall score (0-100) as the unweighted mean of correctness,
+clarity, and depth multiplied by 10 (i.e. mean(0-10 scores) * 10).
 
 Difficulty level: {difficulty}
 {f"Topic: {topic}" if topic else ""}
@@ -70,9 +79,6 @@ Return ONLY a single JSON object with the keys:
     "correctness": <score 0-10>,
     "clarity": <score 0-10>,
     "depth": <score 0-10>,
-    "confidence": <score 0-10>,
-    "technical_accuracy": <score 0-10>,
-    "communication": <score 0-10>,
     "feedback": "<detailed feedback on the answer>",
     "strengths": ["<strength 1>", "<strength 2>"],
     "areas_for_improvement": ["<area 1>", "<area 2>"]
@@ -99,9 +105,6 @@ Do not wrap the JSON in markdown fences. Be strict but fair."""
                 "correctness": result.get("correctness", 5),
                 "clarity": result.get("clarity", 5),
                 "depth": result.get("depth", 5),
-                "confidence": result.get("confidence", 5),
-                "technical_accuracy": result.get("technical_accuracy", 5),
-                "communication": result.get("communication", 5),
                 "feedback": result.get("feedback", ""),
                 "strengths": result.get("strengths", []),
                 "areas_for_improvement": result.get("areas_for_improvement", []),
@@ -114,9 +117,6 @@ Do not wrap the JSON in markdown fences. Be strict but fair."""
                 "correctness": 5,
                 "clarity": 5,
                 "depth": 5,
-                "confidence": 5,
-                "technical_accuracy": 5,
-                "communication": 5,
                 "feedback": "Evaluation failed",
                 "strengths": [],
                 "areas_for_improvement": [],
@@ -180,12 +180,14 @@ Do not wrap the JSON in markdown fences."""
                 "overall_feedback": "Communication evaluation failed",
             }
 
-    def calculate_final_score(
-        self, answers: list, communication_score: float
-    ) -> Optional[Dict[str, Any]]:
-        """Calculate final aggregated score. Returns None when there are no
-        answers (callers must distinguish "no data" from a 0% score)."""
+    def calculate_final_score(self, answers: list) -> Optional[Dict[str, Any]]:
+        """Calculate final aggregated score from per-answer evaluations.
 
+        The score is the unweighted mean of correctness/clarity/depth across
+        all answers, scaled to 0-100. Delivery scoring (confidence, prosody)
+        was removed in Phase 0.1. Returns None when there are no answers
+        (callers must distinguish "no data" from a 0% score).
+        """
         num_answers = len(answers) if answers else 0
         if num_answers == 0:
             return None
@@ -194,15 +196,16 @@ Do not wrap the JSON in markdown fences."""
         total_clarity = sum(a.get("clarity", 5) for a in answers)
         total_depth = sum(a.get("depth", 5) for a in answers)
 
-        technical_score = (
+        final_score = (
             (total_correctness + total_clarity + total_depth) / (3 * num_answers) * 10
         )
-        final_score = (technical_score * 0.7) + (communication_score * 0.3)
 
         return {
-            "technical_score": round(technical_score, 2),
-            "communication_score": round(communication_score, 2),
             "final_score": round(final_score, 2),
+            # `technical_score` retained as an alias for backward compatibility
+            # with callers that still read it; same value as `final_score`
+            # now that confidence/communication weighting is gone.
+            "technical_score": round(final_score, 2),
             "total_questions": num_answers,
             "average_correctness": round(total_correctness / num_answers, 2),
             "average_clarity": round(total_clarity / num_answers, 2),
