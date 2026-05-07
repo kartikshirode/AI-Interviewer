@@ -185,9 +185,10 @@ class ApiService {
     });
   }
 
-  async getSampleQuestions(topicId: number) {
-    return this.request<{ topic_id: number; topic_name: string; questions: string[] }>(
-      `/interviews/sample-questions/${topicId}`,
+  async getSampleQuestions(topicId: number, difficulty: string = 'medium') {
+    const qs = new URLSearchParams({ difficulty }).toString();
+    return this.request<{ topic_id: number; topic_name: string; difficulty: string; questions: string[] }>(
+      `/interviews/sample-questions/${topicId}?${qs}`,
     );
   }
 

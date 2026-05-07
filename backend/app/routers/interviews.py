@@ -15,64 +15,208 @@ from app.models.schemas import (
 )
 from app.routers.auth import get_current_recruiter
 
-SAMPLE_QUESTIONS = {
-    "Python": [
-        "Explain the difference between list and tuple in Python.",
-        "What are decorators in Python and how would you create one?",
-        "Describe the Global Interpreter Lock (GIL) in Python.",
-        "How does list comprehension work in Python?",
-        "What is the difference between shallow and deep copy?",
-    ],
-    "Machine Learning": [
-        "Explain the difference between supervised and unsupervised learning.",
-        "What is overfitting and how can you prevent it?",
-        "Describe the bias-variance tradeoff.",
-        "What is gradient descent and how does it work?",
-        "Explain the working of random forests.",
-    ],
-    "NLP": [
-        "What is the difference between lemmatization and stemming?",
-        "Explain TF-IDF and its importance in NLP.",
-        "What are word embeddings and how do they work?",
-        "Describe the transformer architecture.",
-        "What is the purpose of attention mechanisms in NLP?",
-    ],
-    "Statistics": [
-        "Explain the difference between mean, median, and mode.",
-        "What is p-value and how do you interpret it?",
-        "Describe the Central Limit Theorem.",
-        "What is the difference between correlation and causation?",
-        "Explain hypothesis testing and null hypothesis.",
-    ],
-    "SQL": [
-        "What is the difference between INNER JOIN and LEFT JOIN?",
-        "Explain the concept of primary key and foreign key.",
-        "What are SQL indexes and how do they improve performance?",
-        "Describe the difference between WHERE and HAVING clauses.",
-        "What is normalization in databases?",
-    ],
-    "Data Structures": [
-        "Explain the difference between array and linked list.",
-        "What is the time complexity of common operations in a hash table?",
-        "Describe the difference between stack and queue.",
-        "Explain binary search tree traversal methods.",
-        "What is Big O notation and why is it important?",
-    ],
-    "Deep Learning": [
-        "Explain the concept of backpropagation.",
-        "What is the difference between CNN and RNN?",
-        "Describe how dropout helps in neural networks.",
-        "What are activation functions? Name a few commonly used ones.",
-        "Explain the vanishing gradient problem.",
-    ],
-    "System Design": [
-        "How would you design a URL shortening service like bit.ly?",
-        "Design a distributed caching system.",
-        "What is load balancing and what algorithms are commonly used?",
-        "Explain the CAP theorem.",
-        "How would you design a real-time chat application?",
-    ],
+# Question bank stratified by difficulty. The bank for the chosen difficulty
+# is the only one used at interview-creation time; `medium` is also the
+# fallback for unknown / legacy difficulty values.
+SAMPLE_QUESTIONS_BY_DIFFICULTY: dict[str, dict[str, list[str]]] = {
+    "Python": {
+        "easy": [
+            "What is the difference between a list and a tuple in Python?",
+            "How do you read a file line by line in Python?",
+            "What does the `len()` function return for a dictionary?",
+            "How do you remove duplicates from a list?",
+            "What is the difference between `==` and `is` in Python?",
+        ],
+        "medium": [
+            "Explain the difference between list and tuple in Python.",
+            "What are decorators in Python and how would you create one?",
+            "Describe the Global Interpreter Lock (GIL) in Python.",
+            "How does list comprehension work in Python?",
+            "What is the difference between shallow and deep copy?",
+        ],
+        "hard": [
+            "Explain how the GIL affects multithreaded CPU-bound code, and how you'd work around it.",
+            "Walk through how Python's garbage collector handles reference cycles.",
+            "Implement a metaclass and describe a real situation where it's the right tool.",
+            "How does `asyncio` schedule coroutines under the hood, and what makes a task block the event loop?",
+            "Describe the descriptor protocol and how `@property` is implemented in terms of it.",
+        ],
+    },
+    "Machine Learning": {
+        "easy": [
+            "What's the difference between classification and regression?",
+            "Give an example of a supervised vs. an unsupervised problem.",
+            "What is a training set, validation set, and test set used for?",
+            "What does it mean if a model is overfitting?",
+            "Name two common evaluation metrics for a classification model.",
+        ],
+        "medium": [
+            "Explain the difference between supervised and unsupervised learning.",
+            "What is overfitting and how can you prevent it?",
+            "Describe the bias-variance tradeoff.",
+            "What is gradient descent and how does it work?",
+            "Explain the working of random forests.",
+        ],
+        "hard": [
+            "Derive the gradient of cross-entropy loss with softmax and explain why the math simplifies the way it does.",
+            "Compare L1 and L2 regularization at the level of their effect on the loss surface and the resulting weights.",
+            "How would you debug a model that performs well on validation but poorly in production?",
+            "Explain the EM algorithm and walk through one iteration on a Gaussian mixture model.",
+            "Design an evaluation protocol for a recommender system where labels are implicit feedback.",
+        ],
+    },
+    "NLP": {
+        "easy": [
+            "What is tokenization?",
+            "Give an example of a stop word and explain why it might be removed.",
+            "What is the difference between a word and a token?",
+            "Why might you lowercase text before processing it?",
+            "What is named entity recognition?",
+        ],
+        "medium": [
+            "What is the difference between lemmatization and stemming?",
+            "Explain TF-IDF and its importance in NLP.",
+            "What are word embeddings and how do they work?",
+            "Describe the transformer architecture.",
+            "What is the purpose of attention mechanisms in NLP?",
+        ],
+        "hard": [
+            "Explain self-attention with key, query, and value matrices, and why scaling by sqrt(d_k) matters.",
+            "Compare BPE and WordPiece tokenization and the tradeoffs each makes.",
+            "How would you fine-tune a pre-trained language model for a low-resource domain without catastrophic forgetting?",
+            "Walk through how an encoder-decoder transformer handles a translation task at training time vs. inference time.",
+            "Describe a situation where retrieval-augmented generation outperforms a larger fine-tuned model and why.",
+        ],
+    },
+    "Statistics": {
+        "easy": [
+            "What is the mean of [2, 4, 4, 4, 5, 5, 7, 9]?",
+            "What is the difference between a population and a sample?",
+            "Give an example of a discrete and a continuous random variable.",
+            "What does standard deviation tell you about a dataset?",
+            "If you flip a fair coin twice, what is the probability of two heads?",
+        ],
+        "medium": [
+            "Explain the difference between mean, median, and mode.",
+            "What is p-value and how do you interpret it?",
+            "Describe the Central Limit Theorem.",
+            "What is the difference between correlation and causation?",
+            "Explain hypothesis testing and null hypothesis.",
+        ],
+        "hard": [
+            "When does the Central Limit Theorem fail to apply, and what would you do instead?",
+            "Explain the difference between Type I and Type II errors and how power analysis informs sample size.",
+            "Walk through how you'd design and analyse an A/B test where the metric is heavy-tailed.",
+            "Compare frequentist confidence intervals with Bayesian credible intervals.",
+            "Explain Simpson's paradox with a concrete example and how stratification resolves it.",
+        ],
+    },
+    "SQL": {
+        "easy": [
+            "Write a query to select all rows from a table named `users`.",
+            "How do you count the number of rows in a table?",
+            "What does the `DISTINCT` keyword do?",
+            "What is the difference between `WHERE` and `ORDER BY`?",
+            "How do you sort results in descending order?",
+        ],
+        "medium": [
+            "What is the difference between INNER JOIN and LEFT JOIN?",
+            "Explain the concept of primary key and foreign key.",
+            "What are SQL indexes and how do they improve performance?",
+            "Describe the difference between WHERE and HAVING clauses.",
+            "What is normalization in databases?",
+        ],
+        "hard": [
+            "Walk through what happens when a query uses a non-sargable predicate and how the optimizer handles it.",
+            "Compare clustered vs. non-clustered indexes and when each makes sense.",
+            "Explain transaction isolation levels and the anomalies each one prevents.",
+            "Write a query using window functions to find the top 3 earners per department, and explain the alternatives.",
+            "Describe how you'd diagnose a query that runs fast in dev and slow in production despite identical schemas.",
+        ],
+    },
+    "Data Structures": {
+        "easy": [
+            "What is an array?",
+            "What's the difference between a stack and a queue?",
+            "What does FIFO stand for?",
+            "What is the time complexity of looking up an element by index in an array?",
+            "Name one situation where you'd prefer a linked list over an array.",
+        ],
+        "medium": [
+            "Explain the difference between array and linked list.",
+            "What is the time complexity of common operations in a hash table?",
+            "Describe the difference between stack and queue.",
+            "Explain binary search tree traversal methods.",
+            "What is Big O notation and why is it important?",
+        ],
+        "hard": [
+            "Compare a B-tree and a B+ tree and describe why databases prefer one for indexes.",
+            "Implement an LRU cache with O(1) get and put, and explain each data-structure choice.",
+            "Walk through the amortized analysis of a dynamic array's append operation.",
+            "When would you reach for a Fenwick tree vs. a segment tree, and what's the tradeoff?",
+            "Describe how a skip list achieves logarithmic operations probabilistically and where it shines vs. a balanced BST.",
+        ],
+    },
+    "Deep Learning": {
+        "easy": [
+            "What is a neuron in a neural network?",
+            "What does an activation function do?",
+            "Name one common activation function.",
+            "What is a loss function used for?",
+            "Why do we split data into training and test sets?",
+        ],
+        "medium": [
+            "Explain the concept of backpropagation.",
+            "What is the difference between CNN and RNN?",
+            "Describe how dropout helps in neural networks.",
+            "What are activation functions? Name a few commonly used ones.",
+            "Explain the vanishing gradient problem.",
+        ],
+        "hard": [
+            "Derive backpropagation through a single hidden layer with a sigmoid activation.",
+            "Compare BatchNorm, LayerNorm, and GroupNorm and the situations each is best suited to.",
+            "Explain why residual connections enable training of very deep networks.",
+            "Walk through how the Adam optimizer updates parameters and why it can outperform plain SGD.",
+            "Describe the tradeoffs between transformer encoders and decoders for a sequence labeling task.",
+        ],
+    },
+    "System Design": {
+        "easy": [
+            "What is a database, and what is it used for?",
+            "What is the difference between a client and a server?",
+            "What does an HTTP status code 200 mean?",
+            "What is caching, in simple terms?",
+            "Why might you use multiple servers for the same application?",
+        ],
+        "medium": [
+            "How would you design a URL shortening service like bit.ly?",
+            "Design a distributed caching system.",
+            "What is load balancing and what algorithms are commonly used?",
+            "Explain the CAP theorem.",
+            "How would you design a real-time chat application?",
+        ],
+        "hard": [
+            "Design a globally distributed rate limiter that survives a region outage.",
+            "Walk through the storage and consistency tradeoffs you'd make for a feed system serving 100M users.",
+            "Explain how you'd design a payment system that must be exactly-once at the user-visible level.",
+            "Compare event sourcing with CRUD persistence for an order management service — when does each win?",
+            "Describe how you'd evolve a monolith into services without a big-bang rewrite.",
+        ],
+    },
 }
+
+# Backwards-compatible alias used by existing call sites that don't yet pass
+# a difficulty argument. Resolved to the medium bank.
+SAMPLE_QUESTIONS = {topic: banks["medium"] for topic, banks in SAMPLE_QUESTIONS_BY_DIFFICULTY.items()}
+
+
+def _questions_for(topic_name: str, difficulty: str) -> list[str]:
+    """Pick the question bank for a (topic, difficulty) pair, with `medium`
+    as the fallback for unknown values."""
+    banks = SAMPLE_QUESTIONS_BY_DIFFICULTY.get(str(topic_name))
+    if not banks:
+        return []
+    return banks.get(difficulty) or banks.get("medium") or []
 
 router = APIRouter(prefix="/interviews", tags=["Interviews"])
 
@@ -123,7 +267,7 @@ def create_interview(
         for topic, take in zip(selected_topics, per_topic_counts):
             if take <= 0:
                 continue
-            sample_pool = SAMPLE_QUESTIONS.get(str(topic.name), [])
+            sample_pool = _questions_for(str(topic.name), interview.difficulty)
             for q_text in sample_pool[:take]:
                 questions_to_create.append(
                     Question(
@@ -245,19 +389,21 @@ def add_custom_question(
 @router.get("/sample-questions/{topic_id}")
 def get_sample_questions_for_topic(
     topic_id: int,
+    difficulty: str = "medium",
     db: Session = Depends(get_db),
     recruiter: Recruiter = Depends(get_current_recruiter),
 ):
     """Preview the canned questions that get attached when a topic is
-    selected during interview creation. Returns an empty list if the topic
-    has no preset bank."""
+    selected during interview creation. The bank shown here is exactly the
+    bank picked at create time for the given difficulty."""
     topic = db.query(Topic).filter(Topic.id == topic_id).first()
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-    questions = SAMPLE_QUESTIONS.get(str(topic.name), [])
+    questions = _questions_for(str(topic.name), difficulty)
     return {
         "topic_id": topic.id,
         "topic_name": topic.name,
+        "difficulty": difficulty,
         "questions": questions,
     }
 

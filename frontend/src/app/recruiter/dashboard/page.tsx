@@ -60,6 +60,16 @@ export default function RecruiterDashboard() {
     }
   };
 
+  const fetchSampleQuestions = async (topicId: number, diff: string) => {
+    try {
+      const data = await api.getSampleQuestions(topicId, diff);
+      setSampleQuestions((prev) => ({ ...prev, [topicId]: data.questions }));
+    } catch (err) {
+      console.error('Failed to load sample questions for topic', topicId, err);
+      setSampleQuestions((prev) => ({ ...prev, [topicId]: [] }));
+    }
+  };
+
   const toggleTopic = async (topicId: number) => {
     if (selectedTopics.includes(topicId)) {
       setSelectedTopics(selectedTopics.filter((id) => id !== topicId));
@@ -67,15 +77,18 @@ export default function RecruiterDashboard() {
     }
     setSelectedTopics([...selectedTopics, topicId]);
     if (!sampleQuestions[topicId]) {
-      try {
-        const data = await api.getSampleQuestions(topicId);
-        setSampleQuestions((prev) => ({ ...prev, [topicId]: data.questions }));
-      } catch (err) {
-        console.error('Failed to load sample questions for topic', topicId, err);
-        setSampleQuestions((prev) => ({ ...prev, [topicId]: [] }));
-      }
+      await fetchSampleQuestions(topicId, difficulty);
     }
   };
+
+  // When difficulty changes, refetch previews for every selected topic so
+  // what the user sees matches what'll actually be saved.
+  useEffect(() => {
+    if (selectedTopics.length === 0) return;
+    setSampleQuestions({});
+    selectedTopics.forEach((id) => fetchSampleQuestions(id, difficulty));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [difficulty]);
 
   const handleCreateInterview = async (e: React.FormEvent) => {
     e.preventDefault();
