@@ -34,7 +34,11 @@ def _extract_json(text: str) -> Optional[dict]:
 class EvaluationService:
     def __init__(self):
         genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        # `gemini-flash-latest` auto-tracks the current stable Flash model.
+        # The previous pin to gemini-1.5-flash silently 404'd after Google
+        # retired it, which made every evaluation fall through to the
+        # error path and persist no scores.
+        self.model = genai.GenerativeModel("gemini-flash-latest")
 
     def evaluate_answer(
         self,

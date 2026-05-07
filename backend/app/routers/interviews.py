@@ -14,6 +14,7 @@ from app.models.schemas import (
     QuestionResponse,
 )
 from app.routers.auth import get_current_recruiter
+from app.services.question_generator import QuestionGenerator
 
 # Question bank stratified by difficulty. The bank for the chosen difficulty
 # is the only one used at interview-creation time; `medium` is also the
@@ -210,13 +211,43 @@ SAMPLE_QUESTIONS_BY_DIFFICULTY: dict[str, dict[str, list[str]]] = {
 SAMPLE_QUESTIONS = {topic: banks["medium"] for topic, banks in SAMPLE_QUESTIONS_BY_DIFFICULTY.items()}
 
 
-def _questions_for(topic_name: str, difficulty: str) -> list[str]:
-    """Pick the question bank for a (topic, difficulty) pair, with `medium`
-    as the fallback for unknown values."""
+def _static_bank(topic_name: str, difficulty: str) -> list[str]:
+    """Static fallback bank used when Gemini is unavailable. `medium` is the
+    fallback for unknown difficulty values; an unknown topic returns []."""
     banks = SAMPLE_QUESTIONS_BY_DIFFICULTY.get(str(topic_name))
     if not banks:
         return []
-    return banks.get(difficulty) or banks.get("medium") or []
+    return list(banks.get(difficulty) or banks.get("medium") or [])
+
+
+# Module-level generator. Constructed lazily on first use so importing this
+# module doesn't require a Gemini API key (e.g. during tests).
+_generator: QuestionGenerator | None = None
+
+
+def _get_generator() -> QuestionGenerator:
+    global _generator
+    if _generator is None:
+        _generator = QuestionGenerator(fallback_provider=_static_bank)
+    return _generator
+
+
+def _questions_for(
+    topic_name: str,
+    difficulty: str,
+    count: int = 5,
+    force_refresh: bool = False,
+) -> list[str]:
+    """Resolve the question bank for a (topic, difficulty) pair via the
+    dynamic generator (Gemini), with the static SAMPLE_QUESTIONS bank as a
+    fallback. Cached for 30 minutes to avoid hammering the API on previews.
+    """
+    return _get_generator().get_questions(
+        topic_name=topic_name,
+        difficulty=difficulty,
+        count=count,
+        force_refresh=force_refresh,
+    )
 
 router = APIRouter(prefix="/interviews", tags=["Interviews"])
 
@@ -267,7 +298,9 @@ def create_interview(
         for topic, take in zip(selected_topics, per_topic_counts):
             if take <= 0:
                 continue
-            sample_pool = _questions_for(str(topic.name), interview.difficulty)
+            sample_pool = _questions_for(
+                str(topic.name), interview.difficulty, count=take
+            )
             for q_text in sample_pool[:take]:
                 questions_to_create.append(
                     Question(
@@ -390,16 +423,23 @@ def add_custom_question(
 def get_sample_questions_for_topic(
     topic_id: int,
     difficulty: str = "medium",
+    count: int = 5,
+    regenerate: bool = False,
     db: Session = Depends(get_db),
     recruiter: Recruiter = Depends(get_current_recruiter),
 ):
-    """Preview the canned questions that get attached when a topic is
-    selected during interview creation. The bank shown here is exactly the
-    bank picked at create time for the given difficulty."""
+    """Preview the questions that will be attached to a new interview for
+    this (topic, difficulty). Calls Gemini for a fresh set on the first
+    request, then serves from a 30-minute cache. Pass `regenerate=true` to
+    bust the cache and force a new LLM call. Falls back to a static bank
+    when Gemini is unavailable.
+    """
     topic = db.query(Topic).filter(Topic.id == topic_id).first()
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-    questions = _questions_for(str(topic.name), difficulty)
+    questions = _questions_for(
+        str(topic.name), difficulty, count=count, force_refresh=regenerate
+    )
     return {
         "topic_id": topic.id,
         "topic_name": topic.name,
